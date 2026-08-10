@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.11.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -454,14 +454,37 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isfile(path):
             return self._json({"error": "missing"}, HTTPStatus.NOT_FOUND)
 
-        size = os.path.getsize(path)
+        info = os.stat(path)
+        size = info.st_size
         ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
         start, end = 0, size - 1
         partial = False
 
+        # An identity for this exact version of the file. Android's
+        # DownloadManager stores the ETag from the first response and replays it
+        # as If-Match when it resumes; with no ETag it decides the download
+        # *cannot* be resumed and fails outright on the first dropped
+        # connection, without ever asking for a range. That is why a big file
+        # died at 7.5% and the log showed no second request.
+        etag = '"%d-%d"' % (size, info.st_mtime_ns)
+        modified = self.date_time_string(info.st_mtime)
+
+        # The file changed under a resuming client: tell it so, rather than
+        # splicing bytes from two different files together.
+        if_match = self.headers.get("If-Match")
+        if if_match and if_match.strip() != "*" and etag not in if_match:
+            self.send_response(HTTPStatus.PRECONDITION_FAILED)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         # Range is what makes an interrupted phone download resume instead of
         # restarting — the whole reason not to use http.server for big files.
         rng = self.headers.get("Range")
+        if_range = self.headers.get("If-Range")
+        if if_range and if_range.strip() != etag:
+            rng = None  # stale validator: serve the whole file instead
         if rng:
             match = re.match(r"bytes=(\d*)-(\d*)", rng.strip())
             if match:
@@ -485,6 +508,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", modified)
         if partial:
             self.send_header("Content-Range",
                              "bytes " + str(start) + "-" + str(end) + "/" + str(size))
@@ -494,6 +519,9 @@ class Handler(BaseHTTPRequestHandler):
                              "attachment; filename*=UTF-8''" + urllib.parse.quote(name))
         self.end_headers()
 
+        sent = 0
+        began = time.time()
+        outcome = "complete"
         try:
             with open(path, "rb") as handle:
                 handle.seek(start)
@@ -503,9 +531,20 @@ class Handler(BaseHTTPRequestHandler):
                     if not block:
                         break
                     self.wfile.write(block)
+                    sent += len(block)
                     remaining -= len(block)
         except (BrokenPipeError, ConnectionResetError):
-            pass  # phone cancelled; nothing to clean up
+            outcome = "client-disconnected"
+        except Exception as error:
+            outcome = "error:" + type(error).__name__
+        finally:
+            took = max(0.001, time.time() - began)
+            sys.stderr.write(
+                "  TRANSFER %s %s sent=%d/%d (%.1f%%) in %.1fs %.2fMB/s range=%s\n" % (
+                    outcome, os.path.basename(path), sent, length,
+                    100.0 * sent / max(1, length), took,
+                    sent / took / 1048576, rng or "none"))
+            sys.stderr.flush()
 
     def _send_newest_apk(self):
         """Serve the newest .apk in to-phone/, so the install link stays short."""
