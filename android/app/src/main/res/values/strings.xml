@@ -49,4 +49,12 @@
     <string name="source_code">Source code</string>
     <string name="source_sub">github.com/sayanthns/filebridge</string>
     <string name="license_line">Open source, MIT licensed. Files never leave your network.</string>
+
+    <!-- transfers -->
+    <string name="channel_transfers">Transfers</string>
+    <string name="channel_transfers_desc">Progress while a file is coming from the Mac</string>
+    <string name="cancel">Cancel</string>
+    <string name="saved">Saved</string>
+    <string name="saved_where">In Downloads / FileBridge</string>
+    <string name="download_failed">Download failed</string>
 </resources>

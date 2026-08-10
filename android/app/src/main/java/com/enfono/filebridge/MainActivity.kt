@@ -1,8 +1,11 @@
 package com.enfono.filebridge
 
 import android.Manifest
-import android.app.DownloadManager
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.StatFs
+import android.app.AlertDialog
 import android.net.Uri as AndroidUri
 import android.os.Build
 import android.os.PowerManager
@@ -43,12 +46,12 @@ import java.util.concurrent.Executors
  * FileBridge — the phone half.
  *
  * Connects to the FileBridge server running on the Mac, lists what is in the
- * shared folder, downloads with the system DownloadManager and uploads back.
+ * shared folder, downloads through [DownloadService] and uploads back.
  *
- * Downloads deliberately go through DownloadManager rather than being read in
- * this process: it survives the app being backgrounded, shows a progress
- * notification, and resumes over Range if the wifi drops — which matters when
- * the files are hundreds of megabytes.
+ * Downloads used to go through the system DownloadManager, on the assumption
+ * that a system component would survive backgrounding better than we could. It
+ * did not: it holds no wifi lock, so every large transfer died within seconds
+ * of the screen going off. [DownloadService] replaced it in 1.10.0.
  */
 private const val TAB_FILES = 0
 private const val TAB_SETTINGS = 1
@@ -62,6 +65,7 @@ class MainActivity : AppCompatActivity() {
         val meta: String,
         val isDir: Boolean,
         val done: Boolean,
+        val sizeBytes: Long = 0,
     )
 
     private val io = Executors.newFixedThreadPool(3)
@@ -360,11 +364,25 @@ class MainActivity : AppCompatActivity() {
             if (has(Manifest.permission.CAMERA)) View.GONE else View.VISIBLE
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Our own service sends this, so nothing outside the app may.
+        ContextCompat.registerReceiver(this, downloadWatcher,
+            IntentFilter(DownloadService.ACTION_SETTLED),
+            ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try { unregisterReceiver(downloadWatcher) } catch (e: Exception) { }
+    }
+
     override fun onResume() {
         super.onResume()
         // Permissions may have changed in Android settings while we were away.
         renderPermBanner()
         if (currentTab == TAB_SETTINGS) renderSettings()
+        sweepDownloads()
     }
 
     override fun onNewIntent(incoming: Intent?) {
@@ -467,7 +485,7 @@ class MainActivity : AppCompatActivity() {
                         .filter { it.isNotBlank() }
                     parsed.add(Row(f.getString("name"), f.optString("pretty"),
                         f.getString("path"), bits.joinToString(" · "),
-                        false, f.optBoolean("done")))
+                        false, f.optBoolean("done"), f.optLong("size")))
                 }
 
                 val cwdNow = json.optString("cwd")
@@ -522,21 +540,47 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------ download
 
+    /** Free bytes in the public Downloads volume. */
+    private fun freeSpace(): Long {
+        return try {
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val stat = StatFs(dir.absolutePath)
+            stat.availableBlocksLong * stat.blockSizeLong
+        } catch (e: Exception) {
+            -1L
+        }
+    }
+
+    private fun humanBytes(bytes: Long): String {
+        if (bytes < 0) return "unknown"
+        val units = listOf("B", "KB", "MB", "GB")
+        var value = bytes.toDouble()
+        var unit = 0
+        while (value >= 1024 && unit < units.size - 1) { value /= 1024; unit++ }
+        return String.format("%.1f %s", value, units[unit])
+    }
+
     private fun download(row: Row) {
+        // Check space first. Android's own failure for this is the same generic
+        // "Unable to download" as everything else, which tells the user nothing.
+        val needed = row.sizeBytes
+        val free = freeSpace()
+        if (needed > 0 && free in 1 until (needed + 50L * 1024 * 1024)) {
+            AlertDialog.Builder(this)
+                .setTitle("Not enough space")
+                .setMessage("\"" + row.pretty + "\" needs " + humanBytes(needed) +
+                    " but this phone has only " + humanBytes(free) +
+                    " free.\n\nFree some space and try again.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
         val url = api("/file", "&path=" + enc(row.path))
         try {
-            val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle(row.pretty)
-                .setDescription("FileBridge")
-                .setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS, "FileBridge/" + row.name)
-                .setAllowedOverRoaming(false)
-            request.setMimeType(guessMime(row.name))
-
-            val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            manager.enqueue(request)
+            // Our own service, not DownloadManager: see the note on
+            // DownloadService for why that had to go.
+            DownloadService.start(this, url, row.name, row.pretty, guessMime(row.name))
             toast("Downloading " + row.pretty)
 
             // Tell the Mac it has been taken so the tick shows on both ends.
@@ -550,6 +594,45 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             toast("Could not start: " + e.message)
         }
+    }
+
+    /** A download settled while the app was on screen. */
+    private val downloadWatcher = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, incoming: Intent?) {
+            sweepDownloads()
+        }
+    }
+
+    /**
+     * Report every download that has settled since we last looked. The service
+     * writes its results to prefs, so this works whether the app was on screen
+     * at the time, backgrounded, or not running at all — which matters, because
+     * a big transfer settles precisely when nobody is watching.
+     *
+     * Only the first failure gets a dialog; the rest are toasts, so coming back
+     * to five dead downloads is not five modal boxes.
+     */
+    private fun sweepDownloads() {
+        var shown = false
+        for (result in DownloadService.drainResults(this)) {
+            if (result.ok) {
+                toast("Saved " + result.label)
+            } else if (!shown) {
+                showFailure(result.label, result.detail)
+                shown = true
+            } else {
+                toast(result.label + ": " + result.detail)
+            }
+        }
+    }
+
+    private fun showFailure(label: String, detail: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Download failed")
+            .setMessage(label + "\n\n" + detail)
+            .setPositiveButton("OK", null)
+            .setNeutralButton("Open settings") { _, _ -> showTab(TAB_SETTINGS) }
+            .show()
     }
 
     private fun guessMime(name: String): String {

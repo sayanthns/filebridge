@@ -11,6 +11,20 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- The app does its own downloading (see DownloadService). Android's
+         DownloadManager holds no wifi lock, so a transfer died the moment the
+         screen slept. These are what keep the radio and the CPU awake while
+         bytes are moving, and nothing more. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Only Android 9 and older: from 10 the public Downloads folder is
+         written through MediaStore, which needs no permission at all. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
@@ -38,6 +52,11 @@
                 <data android:scheme="filebridge" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- ZXing ships CaptureActivity as landscape; force portrait so the
              scanner matches the rest of the app. -->
