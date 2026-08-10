@@ -5,9 +5,9 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.9.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.9.0** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.6.0** (code 7) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Server | **1.11.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.11.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Android app | **1.10.0** (code 11) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -16,6 +16,24 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.11.0
+- **Big downloads to the phone survive a dropped connection.** `/file` now sends
+  an `ETag` (`"<size>-<mtime_ns>"`) and `Last-Modified`. Android's
+  DownloadManager keeps the ETag from the first response and replays it as
+  `If-Match` with `Range: bytes=N-` when it resumes; with no ETag it decides the
+  download *cannot* be resumed and fails on the first broken connection without
+  ever asking for a range. The 1.10.0 transfer log proved exactly that: a 707 MB
+  file died at 7.5% after 16 s, and the whole log contained no ranged request.
+  `If-Range` with a stale validator now falls back to a full `200`, and a stale
+  `If-Match` answers `412` rather than splicing two different files together.
+
+### 1.10.0
+- **Every transfer logs how it ended** — `complete` / `client-disconnected` /
+  `error:<type>`, with bytes sent, duration, rate and the requested range. Added
+  because three plausible theories all fitted the one thing Android shows for a
+  failure ("Unable to download"), and none of them could be told apart without
+  knowing what the Mac saw. It answered it in one attempt.
 
 ### 1.9.0
 - **The panel recovers by itself after a Quit.** Chrome reuses an existing
@@ -98,6 +116,46 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Android app
+
+### 1.10.0 (versionCode 11)
+- **The app downloads files itself. DownloadManager is gone.** It runs transfers
+  as JobScheduler work and holds no wifi lock, so the radio slept with the
+  screen and the transfer was dropped as "network lost" rather than retried.
+  Measured on the Mac across three attempts at a 707 MB file: dead at 15.8 s,
+  15.9 s and 16.2 s — three different byte counts, one clock, i.e. the phone's
+  15 s display timeout. It never once asked for a byte range afterwards, even
+  with the server sending an ETag.
+- `DownloadService` is a foreground service holding a **WifiLock**
+  (`FULL_LOW_LATENCY`, or `FULL_HIGH_PERF` below Android 10) and a partial
+  WakeLock while bytes are moving, with its own resume loop: `Range: bytes=N-`
+  plus `If-Match` after every drop, backoff between tries, and a give-up only
+  after 8 attempts that move **no** bytes at all. Any progress resets the count,
+  so a flaky link finishes rather than failing.
+- **A partial file survives a give-up.** The target and its ETag are recorded
+  per URL, so downloading the same file again continues from where it stopped
+  instead of starting over.
+- Written through MediaStore on Android 10+ (append mode `wa`, `IS_PENDING`
+  until complete), plain files below that. Notification shows progress, rate and
+  a Cancel action.
+- Failures now say what actually happened in a sentence, instead of mapping
+  Android's error enum to a guess.
+
+### 1.9.0 (versionCode 10)
+- **The failure reason now actually reaches you.** 1.8.0 asked Android *why* a
+  download failed, but only while the app was on screen — the receiver lived
+  between `onStart` and `onStop`, and a long download fails precisely when the
+  phone is asleep with the app long gone. Pending downloads are recorded in
+  prefs and swept on every resume, so the reason survives the process dying.
+  First failure of a sweep gets a dialog, the rest are toasts.
+- The "could not resume" message names the real cause: a Mac older than 1.11.0
+  sends no ETag, and without one Android refuses to resume at all.
+
+### 1.8.0 (versionCode 9)
+- **Failures say why.** Android reports one generic "Unable to download" for
+  every cause, which is why three different theories fitted the same symptom.
+  `COLUMN_REASON` is read and explained in plain words.
+- Free space is checked before enqueuing, and a name collision in
+  `Downloads/FileBridge` picks the next free name instead of failing.
 
 ### 1.6.0 (versionCode 7)
 - **Settings tab with in-app permission management.** Bottom nav (Files /
