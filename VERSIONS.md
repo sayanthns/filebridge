@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.7.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.7.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.9.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.9.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.5.0** (code 6) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,19 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.9.0
+- **The panel recovers by itself after a Quit.** Chrome reuses an existing
+  `--app` window for the same URL, so reopening File Bridge fronts the *same*
+  page rather than making a new one. Since that page had stopped polling, it sat
+  on "Sharing ended" forever and never showed the new QR. It now keeps polling
+  while dead and revives when the server answers again.
+
+### 1.8.0
+- **The "server gone" state hides its buttons.** Pressing Quit left Copy link /
+  Stop sharing / "Quitting…" on screen, so a finished quit read as a frozen
+  panel with controls for a process that no longer existed. `render()` now owns
+  that state like every other.
 
 ### 1.7.0
 - **Stop Sharing pauses instead of exiting.** Killing the process also killed the

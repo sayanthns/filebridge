@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.9.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -820,7 +820,7 @@ button:disabled{opacity:.45;cursor:default}
 <script>
 const $ = id => document.getElementById(id);
 let link = "__LINK__";
-let sharing = true, client = "", shownQr = false;
+let sharing = true, client = "", shownQr = false, dead = false;
 
 function el(tag, cls, text){
   const n = document.createElement(tag);
@@ -830,6 +830,18 @@ function el(tag, cls, text){
 }
 
 function render(){
+  if(dead){
+    $("dot").classList.remove("on");
+    $("state").textContent = "Not running";
+    $("link").textContent = "File Bridge has quit";
+    ["start","stop","copy","quit"].forEach(id => $(id).style.display = "none");
+    $("qrcard").replaceChildren(
+      el("div", "qrtitle", "Sharing ended"),
+      el("div", "hint", "Open File Bridge from the Dock or Launchpad and this " +
+                        "page will reconnect by itself.")
+    );
+    return;
+  }
   $("dot").classList.toggle("on", sharing);
   $("state").textContent = sharing ? (client ? "Sharing - phone connected" : "Sharing")
                                    : "Paused";
@@ -876,16 +888,15 @@ async function poll(){
     const r = await fetch("/api/status");
     const s = await r.json();
     if(s.error) return;
+    if(dead){ dead = false; shownQr = false; }   // server is back
     link = s.link; sharing = s.sharing; client = s.client || "";
     $("toCount").textContent = s.to_phone + (s.to_phone === 1 ? " file" : " files");
     $("fromCount").textContent = s.from_phone + (s.from_phone === 1 ? " file" : " files");
     render();
   }catch(e){
-    // Server gone (Quit, or crash): say so rather than looking alive.
-    $("dot").classList.remove("on");
-    $("state").textContent = "Not running";
-    $("link").textContent = "Open File Bridge from Launchpad";
-    $("qrcard").replaceChildren(el("div", "hint", "You can close this window."));
+    if(!dead){ dead = true; render(); }
+    // Deliberately keep polling: the window is reused when the app is opened
+    // again, so this page has to be able to come back to life on its own.
   }
 }
 
@@ -901,14 +912,19 @@ $("start").onclick = async () => { await call("/api/start"); poll(); };
 $("quit").onclick  = async () => {
   $("quit").disabled = true; $("quit").textContent = "Quitting...";
   await call("/api/quit");
-  setTimeout(poll, 800);
+  // The process is going away, so settle the UI ourselves rather than waiting
+  // for a poll that will simply fail. Polling continues, so reopening the app
+  // revives this same window.
+  setTimeout(() => { dead = true; render(); $("quit").disabled = false;
+                     $("quit").textContent = "Quit"; }, 700);
 };
 const openFolder = name => fetch("/api/open", {method:"POST",
   headers:{"Content-Type":"application/json"}, body:JSON.stringify({folder:name})});
 $("openTo").onclick = () => openFolder("to-phone");
 $("openFrom").onclick = () => openFolder("from-phone");
 
-poll(); setInterval(poll, 2500);
+let timer = setInterval(poll, 2500);
+poll();
 </script></body></html>
 """
 
