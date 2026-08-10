@@ -1,0 +1,19 @@
+# build output
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+*.apk
+
+# python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# never commit: the access key and per-machine state live outside the repo,
+# but guard against a stray copy
+key
+state.json
+*.log

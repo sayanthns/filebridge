@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- White plate, matching the supplied icon artwork. -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <color name="brand">#0572F7</color>
+    <color name="brand_dark">#0B5ED7</color>
+    <color name="ink">#101828</color>
+    <color name="muted">#667085</color>
+    <color name="line">#E4E7EC</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="canvas">#F4F6FA</color>
+</resources>
