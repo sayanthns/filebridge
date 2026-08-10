@@ -11,7 +11,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- The app does its own downloading (see DownloadService). Android's
+    <!-- The app does its own transfers (see TransferService). Android's
          DownloadManager holds no wifi lock, so a transfer died the moment the
          screen slept. These are what keep the radio and the CPU awake while
          bytes are moving, and nothing more. -->
@@ -54,9 +54,21 @@
         </activity>
 
         <service
-            android:name=".DownloadService"
+            android:name=".TransferService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Lets a player open a finished download on Android 9 and older, where
+             the file is a plain path rather than a MediaStore uri. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- ZXing ships CaptureActivity as landscape; force portrait so the
              scanner matches the rest of the app. -->

@@ -35,8 +35,6 @@ import androidx.appcompat.app.AppCompatActivity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
-import java.io.DataOutputStream
-import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -46,12 +44,14 @@ import java.util.concurrent.Executors
  * FileBridge — the phone half.
  *
  * Connects to the FileBridge server running on the Mac, lists what is in the
- * shared folder, downloads through [DownloadService] and uploads back.
+ * shared folder, and hands both directions to [TransferService].
  *
  * Downloads used to go through the system DownloadManager, on the assumption
  * that a system component would survive backgrounding better than we could. It
- * did not: it holds no wifi lock, so every large transfer died within seconds
- * of the screen going off. [DownloadService] replaced it in 1.10.0.
+ * did not: it holds no wifi lock, so every large transfer died within seconds of
+ * the screen going off. Uploads had the same hole for longer, running on this
+ * Activity's pool with no lock and no progress. Both live in the service now, so
+ * nothing depends on this screen staying alive.
  */
 private const val TAB_FILES = 0
 private const val TAB_SETTINGS = 1
@@ -172,6 +172,7 @@ class MainActivity : AppCompatActivity() {
             val row = rows[position]
             when {
                 row.isDir -> load(row.path)
+                row.done -> openOrRedownload(row)
                 else -> download(row)
             }
         }
@@ -368,7 +369,7 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         // Our own service sends this, so nothing outside the app may.
         ContextCompat.registerReceiver(this, downloadWatcher,
-            IntentFilter(DownloadService.ACTION_SETTLED),
+            IntentFilter(TransferService.ACTION_SETTLED),
             ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
@@ -579,8 +580,9 @@ class MainActivity : AppCompatActivity() {
         val url = api("/file", "&path=" + enc(row.path))
         try {
             // Our own service, not DownloadManager: see the note on
-            // DownloadService for why that had to go.
-            DownloadService.start(this, url, row.name, row.pretty, guessMime(row.name))
+            // TransferService for why that had to go.
+            TransferService.startDownload(
+                this, url, row.name, row.pretty, guessMime(row.name), row.path)
             toast("Downloading " + row.pretty)
 
             // Tell the Mac it has been taken so the tick shows on both ends.
@@ -596,10 +598,42 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** A download settled while the app was on screen. */
+    /** A transfer settled while the app was on screen. */
     private val downloadWatcher = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, incoming: Intent?) {
             sweepDownloads()
+            load(cwd)   // an upload changes what the Mac is holding
+        }
+    }
+
+    /**
+     * A file already pulled once. Re-fetching it is almost never what the tap
+     * meant, so offer to play it — the reason tapping a finished row used to
+     * appear to do nothing.
+     */
+    private fun openOrRedownload(row: Row) {
+        val saved = TransferService.savedUri(this, row.path)
+        if (saved == null) {
+            download(row)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.already_downloaded))
+            .setMessage(row.pretty)
+            .setPositiveButton(R.string.open) { _, _ -> openSaved(saved.first, saved.second) }
+            .setNeutralButton(R.string.download_again) { _, _ -> download(row) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun openSaved(uri: Uri, mime: String) {
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, if (mime.isEmpty()) "*/*" else mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(view)
+        } catch (e: Exception) {
+            toast(getString(R.string.no_player))
         }
     }
 
@@ -614,7 +648,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun sweepDownloads() {
         var shown = false
-        for (result in DownloadService.drainResults(this)) {
+        for (result in TransferService.drainResults(this)) {
             if (result.ok) {
                 toast("Saved " + result.label)
             } else if (!shown) {
@@ -650,88 +684,30 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------ upload
 
+    /**
+     * Hand each file to [TransferService] rather than sending it here.
+     *
+     * Sending used to run on this Activity's own thread pool, with no wifi lock
+     * and no notification: a big video died the moment the screen slept — the
+     * same fault that killed downloads — and the only thing on screen was
+     * "sending 1 file(s)…", which never changed whether it worked or not. The
+     * service holds the radio awake and shows real progress.
+     */
     private fun upload(uris: List<Uri>) {
-        status("sending " + uris.size + " file(s)...")
-        io.execute {
-            var ok = 0
-            for (uri in uris) {
-                try {
-                    sendOne(uri)
-                    ok++
-                    val done = ok
-                    ui.post { status("sent " + done + " / " + uris.size) }
-                } catch (e: Exception) {
-                    ui.post { toast("Failed: " + e.message) }
-                }
+        // Read access has to outlive this Activity, since the service may still
+        // be sending after it is gone.
+        for (uri in uris) {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {
+                // Not all pickers offer a persistable grant; the service still
+                // holds this process's own transient permission.
             }
-            ui.post {
-                toast("Sent " + ok + " of " + uris.size)
-                load(cwd)
-            }
+            TransferService.startUpload(this, api("/api/upload"), uri, displayName(uri))
         }
-    }
-
-    private fun sendOne(uri: Uri) {
-        val name = displayName(uri)
-        val size = sizeOf(uri)
-        val boundary = "----fb" + System.currentTimeMillis()
-
-        val head = ("--" + boundary + "\r\n" +
-            "Content-Disposition: form-data; name=\"f\"; filename=\"" + name + "\"\r\n" +
-            "Content-Type: application/octet-stream\r\n\r\n").toByteArray()
-        val tail = ("\r\n--" + boundary + "--\r\n").toByteArray()
-
-        val conn = URL(api("/api/upload")).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        // Fixed length, not chunked: declaring the size keeps the body framed
-        // in a way the server can read, and still streams from disk so a large
-        // video never lands in this process's memory.
-        if (size > 0) {
-            conn.setFixedLengthStreamingMode(head.size + size + tail.size)
-        } else {
-            conn.setChunkedStreamingMode(256 * 1024)
-        }
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-        conn.connectTimeout = 15000
-        conn.readTimeout = 120000
-
-        DataOutputStream(conn.outputStream).use { out ->
-            out.write(head)
-            contentResolver.openInputStream(uri)?.use { input -> copy(input, out) }
-            out.write(tail)
-            out.flush()
-        }
-
-        val code = conn.responseCode
-        val detail = if (code !in 200..299) {
-            try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (e: Exception) { "" }
-        } else ""
-        conn.disconnect()
-        if (code !in 200..299) {
-            throw RuntimeException("server said " + code +
-                (if (detail.isNotBlank()) ": " + detail.take(120) else ""))
-        }
-    }
-
-    private fun copy(input: InputStream, out: DataOutputStream) {
-        val buffer = ByteArray(256 * 1024)
-        while (true) {
-            val read = input.read(buffer)
-            if (read <= 0) break
-            out.write(buffer, 0, read)
-        }
-    }
-
-    /** Byte size from the content provider, or -1 when it will not say. */
-    private fun sizeOf(uri: Uri): Long {
-        var size = -1L
-        val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
-        cursor?.use {
-            val index = it.getColumnIndex(OpenableColumns.SIZE)
-            if (index >= 0 && it.moveToFirst() && !it.isNull(index)) size = it.getLong(index)
-        }
-        return size
+        status(getString(R.string.queued) + " " + uris.size)
+        toast(getString(R.string.queued) + " " + uris.size)
     }
 
     private fun displayName(uri: Uri): String {

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only Android 9 and older reach Downloads as plain files; from 10 the saved
+     file is already a MediaStore uri that other apps can open directly. -->
+<paths>
+    <external-path name="downloads" path="Download/" />
+</paths>

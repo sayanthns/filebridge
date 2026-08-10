@@ -16,6 +16,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -28,30 +29,41 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Downloads files from the Mac, in the foreground, holding the radio awake.
+ * Moves files between the Mac and this phone, in the foreground, holding the
+ * radio awake. Both directions live here.
  *
- * Android's own DownloadManager was used until 1.9.0 and could not do this job.
- * It runs transfers as JobScheduler work and holds no wifi lock, so when the
- * screen went off the radio slept, the socket died, and the whole download was
- * dropped as "network lost" rather than retried. Measured on the Mac: three
- * attempts at a 707 MB file, killed at 15.8 s, 15.9 s and 16.2 s — three
- * different byte counts, the same clock, i.e. the phone's 15 s display timeout.
- * DownloadManager never once asked for a byte range afterwards.
+ * Android's own DownloadManager was used for downloads until 1.9.0 and could not
+ * do the job. It runs transfers as JobScheduler work and holds no wifi lock, so
+ * when the screen went off the radio slept, the socket died, and the whole
+ * download was dropped as "network lost" rather than retried. Measured on the
+ * Mac: three attempts at a 707 MB file, killed at 15.8 s, 15.9 s and 16.2 s —
+ * three different byte counts, the same clock, i.e. the phone's 15 s display
+ * timeout.
  *
- * So the app does it itself: a foreground service, a WifiLock and a partial
- * WakeLock for as long as bytes are moving, and a resume loop that asks for
- * `Range: bytes=N-` after every drop. Partial files survive a give-up, so a
- * later retry of the same URL continues instead of restarting.
+ * Uploads had the same hole for longer: they ran on a pool inside the Activity
+ * with no lock and no notification, so a big send died silently the moment the
+ * screen slept, and nothing on screen ever said so. 1.11.0 moved them here.
+ *
+ * Downloads resume: `Range: bytes=N-` plus `If-Match` after every drop, and a
+ * partial file survives a give-up so a later attempt continues. **Uploads do
+ * not** — the server takes one multipart POST and has no offset endpoint, so an
+ * interrupted send has to start over. That is the next thing worth building.
  */
-class DownloadService : Service() {
+class TransferService : Service() {
 
     companion object {
+        const val EXTRA_KIND = "kind"
         const val EXTRA_URL = "url"
         const val EXTRA_NAME = "name"
         const val EXTRA_LABEL = "label"
         const val EXTRA_MIME = "mime"
+        const val EXTRA_PATH = "path"      // the file's path on the Mac
+        const val EXTRA_SOURCE = "source"  // content:// uri being uploaded
+        const val KIND_DOWNLOAD = "download"
+        const val KIND_UPLOAD = "upload"
+
         const val ACTION_CANCEL = "com.enfono.filebridge.CANCEL"
-        /** Sent when a download settles, so a live Activity can react at once. */
+        /** Sent when a transfer settles, so a live Activity can react at once. */
         const val ACTION_SETTLED = "com.enfono.filebridge.SETTLED"
 
         private const val CHANNEL = "transfers"
@@ -59,16 +71,32 @@ class DownloadService : Service() {
         private const val PREFS = "fb"
         private const val KEY_RESULTS = "download_results"
         private const val KEY_RESUME = "download_resume"
+        private const val KEY_SAVED = "download_saved"
 
         /** Attempts with no progress at all before giving up. Progress resets it. */
         private const val STALLED_LIMIT = 8
 
-        fun start(context: Context, url: String, name: String, label: String, mime: String) {
-            val intent = Intent(context, DownloadService::class.java)
+        fun startDownload(context: Context, url: String, name: String, label: String,
+                          mime: String, path: String) {
+            launch(context, Intent(context, TransferService::class.java)
+                .putExtra(EXTRA_KIND, KIND_DOWNLOAD)
                 .putExtra(EXTRA_URL, url)
                 .putExtra(EXTRA_NAME, name)
                 .putExtra(EXTRA_LABEL, label)
                 .putExtra(EXTRA_MIME, mime)
+                .putExtra(EXTRA_PATH, path))
+        }
+
+        fun startUpload(context: Context, url: String, source: Uri, name: String) {
+            launch(context, Intent(context, TransferService::class.java)
+                .putExtra(EXTRA_KIND, KIND_UPLOAD)
+                .putExtra(EXTRA_URL, url)
+                .putExtra(EXTRA_NAME, name)
+                .putExtra(EXTRA_LABEL, name)
+                .putExtra(EXTRA_SOURCE, source.toString()))
+        }
+
+        private fun launch(context: Context, intent: Intent) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -87,12 +115,27 @@ class DownloadService : Service() {
                 for (i in 0 until array.length()) {
                     val item = array.getJSONObject(i)
                     out.add(Result(item.optString("label"), item.optBoolean("ok"),
-                        item.optString("detail")))
+                        item.optString("detail"), item.optString("uri"),
+                        item.optString("mime")))
                 }
             } catch (e: Exception) {
                 // A corrupt list is not worth crashing over; it has been cleared.
             }
             return out
+        }
+
+        /** Where a finished download of this Mac path landed, if we still know. */
+        fun savedUri(context: Context, path: String): Pair<Uri, String>? {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val map = try {
+                JSONObject(prefs.getString(KEY_SAVED, "{}") ?: "{}")
+            } catch (e: Exception) {
+                return null
+            }
+            val entry = map.optJSONObject(path) ?: return null
+            val uri = entry.optString("uri")
+            if (uri.isEmpty()) return null
+            return Pair(Uri.parse(uri), entry.optString("mime", "*/*"))
         }
 
         fun human(bytes: Long): String {
@@ -106,15 +149,29 @@ class DownloadService : Service() {
         }
     }
 
-    data class Result(val label: String, val ok: Boolean, val detail: String)
+    data class Result(
+        val label: String,
+        val ok: Boolean,
+        val detail: String,
+        val uri: String = "",
+        val mime: String = "")
 
     private class Job(
-        val url: String, val name: String, val label: String, val mime: String)
+        val kind: String,
+        val url: String,
+        val name: String,
+        val label: String,
+        val mime: String,
+        val path: String,
+        val source: Uri?)
 
     private val queue = LinkedBlockingQueue<Job>()
     private val cancelled = AtomicBoolean(false)
-    private var worker: Thread? = null
+    /** Guards the busy flag against the queue, so no job is ever left unclaimed. */
+    private val gate = Object()
+    private var busy = false
     @Volatile private var running = true
+    @Volatile private var current: String = ""
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -129,67 +186,107 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
             cancelled.set(true)
-            queue.clear()
+            synchronized(gate) { queue.clear() }
             return START_NOT_STICKY
         }
 
         val url = intent?.getStringExtra(EXTRA_URL)
         val name = intent?.getStringExtra(EXTRA_NAME)
         if (url.isNullOrEmpty() || name.isNullOrEmpty()) {
-            if (queue.isEmpty() && worker == null) stopSelf()
+            synchronized(gate) { if (queue.isEmpty() && !busy) stopSelf() }
             return START_NOT_STICKY
         }
 
-        val label = intent.getStringExtra(EXTRA_LABEL) ?: name
-        val mime = intent.getStringExtra(EXTRA_MIME) ?: "application/octet-stream"
+        val job = Job(
+            kind = intent.getStringExtra(EXTRA_KIND) ?: KIND_DOWNLOAD,
+            url = url,
+            name = name,
+            label = intent.getStringExtra(EXTRA_LABEL) ?: name,
+            mime = intent.getStringExtra(EXTRA_MIME) ?: "application/octet-stream",
+            path = intent.getStringExtra(EXTRA_PATH) ?: "",
+            source = intent.getStringExtra(EXTRA_SOURCE)?.let { Uri.parse(it) })
 
         // Foreground before anything slow: Android gives a service seconds, not
-        // minutes, to put its notification up, and kills it otherwise.
-        startForeground(ONGOING_ID, ongoing(label, 0, 0, 0.0))
-        queue.add(Job(url, name, label, mime))
-        startWorker()
+        // minutes, to put its notification up, and kills it otherwise. Keep the
+        // label of whatever is actually transferring — a second tap must not
+        // relabel the notification of the file already in flight.
+        val shown = if (current.isEmpty()) job.label else current
+        startForeground(ONGOING_ID, ongoing(shown, job.kind, 0, 0, 0.0))
+
+        synchronized(gate) {
+            queue.add(job)
+            if (!busy) {
+                busy = true
+                cancelled.set(false)
+                spawnWorker()
+            }
+        }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         running = false
         cancelled.set(true)
-        worker?.interrupt()
         releaseLocks()
         super.onDestroy()
     }
 
     // ------------------------------------------------------------ the worker
 
-    private fun startWorker() {
-        if (worker?.isAlive == true) return
-        cancelled.set(false)
-        worker = Thread {
+    /**
+     * One job at a time, in order. Serial on purpose: two large transfers over
+     * one wifi link finish later than the same two run back to back, and the
+     * progress notification can only honestly describe one of them.
+     *
+     * The handshake with [busy] matters. Polling an empty queue and *then*
+     * exiting would let a job arriving in that window sit unclaimed forever,
+     * with the tap looking accepted — so the queue is only declared empty while
+     * holding the lock that a new job must also take.
+     */
+    private fun spawnWorker() {
+        Thread {
             acquireLocks()
             try {
                 while (running) {
-                    val job = queue.poll() ?: break
+                    val job = synchronized(gate) {
+                        val next = queue.poll()
+                        if (next == null) busy = false
+                        next
+                    } ?: break
+
+                    current = job.label
                     val outcome = try {
-                        runJob(job)
+                        if (job.kind == KIND_UPLOAD) runUpload(job) else runDownload(job)
                     } catch (e: InterruptedException) {
                         "Cancelled."
                     } catch (e: Exception) {
                         "Unexpected error: " + (e.message ?: e.javaClass.simpleName)
                     }
-                    record(job.label, outcome == null, outcome ?: "Saved to Downloads/FileBridge")
-                    finished(job.label, outcome)
+                    current = ""
+
+                    val saved = if (outcome == null && job.kind == KIND_DOWNLOAD)
+                        savedUri(this, job.path) else null
+                    record(job.label, outcome == null,
+                        outcome ?: successLine(job),
+                        saved?.first?.toString() ?: "", saved?.second ?: "")
+                    finished(job.label, outcome, saved)
                 }
             } finally {
                 releaseLocks()
                 stopForeground(true)
                 stopSelf()
             }
-        }
-        worker!!.start()
+        }.start()
     }
 
+    private fun successLine(job: Job) =
+        if (job.kind == KIND_UPLOAD) getString(R.string.sent_to_mac)
+        else getString(R.string.saved_where)
+
+    // ------------------------------------------------------------ download
+
     /** Returns null on success, or a sentence explaining the failure. */
-    private fun runJob(job: Job): String? {
+    private fun runDownload(job: Job): String? {
         val target = openTarget(job) ?: return "Could not create the file in Downloads."
         var have = target.size()
         var stalled = 0
@@ -249,7 +346,7 @@ class DownloadService : Service() {
                             val now = System.currentTimeMillis()
                             if (now - lastTick >= 1000) {
                                 val rate = (have - tickBytes) * 1000.0 / (now - lastTick)
-                                notifyOngoing(job.label, have, total, rate)
+                                notifyOngoing(job.label, job.kind, have, total, rate)
                                 lastTick = now
                                 tickBytes = have
                             }
@@ -261,7 +358,7 @@ class DownloadService : Service() {
 
                 have = target.size()
                 if (total > 0 && have >= total) {
-                    target.finish()
+                    target.finish(job)
                     return null
                 }
                 // Ended early without an exception: the connection closed
@@ -271,7 +368,7 @@ class DownloadService : Service() {
             } catch (e: IOException) {
                 have = target.size()
                 if (total > 0 && have >= total) {
-                    target.finish()
+                    target.finish(job)
                     return null
                 }
             }
@@ -284,7 +381,7 @@ class DownloadService : Service() {
                     "Downloading again resumes from " + human(have) + "."
             }
 
-            notifyOngoing(job.label, have, total, 0.0)
+            notifyOngoing(job.label, job.kind, have, total, 0.0)
             try {
                 Thread.sleep(minOf(2000L * (stalled + 1), 15000L))
             } catch (e: InterruptedException) {
@@ -302,6 +399,98 @@ class DownloadService : Service() {
         }
         val length = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
         return if (length < 0) -1L else length + offset
+    }
+
+    // ------------------------------------------------------------ upload
+
+    /**
+     * One multipart POST, streamed from the content provider so a large video
+     * never lands in this process's memory. No resume: the server has a single
+     * upload endpoint with no offset, so an interruption means starting over.
+     * The wifi lock is what stops that being the normal case.
+     */
+    private fun runUpload(job: Job): String? {
+        val source = job.source ?: return "Nothing to send."
+        val total = sizeOf(source)
+        val boundary = "----fb" + System.currentTimeMillis()
+        val head = ("--" + boundary + "\r\n" +
+            "Content-Disposition: form-data; name=\"f\"; filename=\"" + job.name + "\"\r\n" +
+            "Content-Type: application/octet-stream\r\n\r\n").toByteArray()
+        val tail = ("\r\n--" + boundary + "--\r\n").toByteArray()
+
+        var sent = 0L
+        val connection = URL(job.url).openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            // Declaring the length keeps the body framed in a way the server can
+            // read; chunked was rejected as empty before server 1.6.0.
+            if (total > 0) {
+                connection.setFixedLengthStreamingMode(head.size + total + tail.size)
+            } else {
+                connection.setChunkedStreamingMode(256 * 1024)
+            }
+            connection.setRequestProperty("Content-Type",
+                "multipart/form-data; boundary=" + boundary)
+            connection.connectTimeout = 15000
+            connection.readTimeout = 120000
+
+            var lastTick = System.currentTimeMillis()
+            var tickBytes = 0L
+            connection.outputStream.use { out ->
+                out.write(head)
+                val input = contentResolver.openInputStream(source)
+                    ?: return "The phone would not open that file."
+                input.use {
+                    val buffer = ByteArray(256 * 1024)
+                    while (true) {
+                        if (cancelled.get()) throw InterruptedException()
+                        val read = it.read(buffer)
+                        if (read <= 0) break
+                        out.write(buffer, 0, read)
+                        sent += read
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastTick >= 1000) {
+                            val rate = (sent - tickBytes) * 1000.0 / (now - lastTick)
+                            notifyOngoing(job.label, job.kind, sent, total, rate)
+                            lastTick = now
+                            tickBytes = sent
+                        }
+                    }
+                }
+                out.write(tail)
+                out.flush()
+            }
+
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val detail = try {
+                    connection.errorStream?.bufferedReader()?.readText() ?: ""
+                } catch (e: Exception) {
+                    ""
+                }
+                return "The Mac refused it (HTTP " + code + ")" +
+                    (if (detail.isNotBlank()) ": " + detail.take(120) else "") + "."
+            }
+            return null
+        } catch (e: InterruptedException) {
+            return "Cancelled."
+        } catch (e: IOException) {
+            return "The connection dropped after " + human(sent) +
+                " of " + human(total) + ". Sends cannot resume yet, so this one " +
+                "has to start over."
+        } finally {
+            try { connection.disconnect() } catch (e: Exception) { }
+        }
+    }
+
+    private fun sizeOf(uri: Uri): Long {
+        return try {
+            contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+        } catch (e: Exception) {
+            -1L
+        }
     }
 
     // ------------------------------------------------------------ the file
@@ -335,13 +524,14 @@ class DownloadService : Service() {
             contentResolver.openOutputStream(uri!!, "wt")?.close()
         }
 
-        fun finish() {
+        fun finish(job: Job) {
             if (uri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues()
                 values.put(MediaStore.Downloads.IS_PENDING, 0)
                 contentResolver.update(uri, values, null, null)
             }
             forgetResume()
+            rememberSaved(job)
         }
 
         fun rememberResume(url: String) {
@@ -361,6 +551,23 @@ class DownloadService : Service() {
             }
             prefs().edit().putString(KEY_RESUME, map.toString()).apply()
         }
+
+        /** So tapping a finished file in the app can open it instead of re-fetching. */
+        fun rememberSaved(job: Job) {
+            if (job.path.isEmpty()) return
+            val openable = uri ?: fileUri(file!!) ?: return
+            val map = savedMap().put(job.path, JSONObject()
+                .put("uri", openable.toString())
+                .put("mime", job.mime))
+            prefs().edit().putString(KEY_SAVED, map.toString()).apply()
+        }
+    }
+
+    /** A uri another app may actually open, for the pre-MediaStore path. */
+    private fun fileUri(file: File): Uri? = try {
+        FileProvider.getUriForFile(this, packageName + ".files", file)
+    } catch (e: Exception) {
+        null
     }
 
     /**
@@ -431,10 +638,17 @@ class DownloadService : Service() {
         try { JSONObject(prefs().getString(KEY_RESUME, "{}") ?: "{}") }
         catch (e: Exception) { JSONObject() }
 
-    private fun record(label: String, ok: Boolean, detail: String) {
+    private fun savedMap(): JSONObject =
+        try { JSONObject(prefs().getString(KEY_SAVED, "{}") ?: "{}") }
+        catch (e: Exception) { JSONObject() }
+
+    private fun record(label: String, ok: Boolean, detail: String,
+                       uri: String, mime: String) {
         val raw = prefs().getString(KEY_RESULTS, "[]") ?: "[]"
         val array = try { JSONArray(raw) } catch (e: Exception) { JSONArray() }
-        array.put(JSONObject().put("label", label).put("ok", ok).put("detail", detail))
+        array.put(JSONObject()
+            .put("label", label).put("ok", ok).put("detail", detail)
+            .put("uri", uri).put("mime", mime))
         prefs().edit().putString(KEY_RESULTS, array.toString()).apply()
         sendBroadcast(Intent(ACTION_SETTLED).setPackage(packageName))
     }
@@ -459,19 +673,34 @@ class DownloadService : Service() {
         PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java), pendingFlags())
 
-    private fun ongoing(label: String, have: Long, total: Long, rate: Double): Notification {
-        val cancel = PendingIntent.getService(this, 1,
-            Intent(this, DownloadService::class.java).setAction(ACTION_CANCEL), pendingFlags())
+    /** Tapping a finished download plays it, rather than reopening this app. */
+    private fun openFileIntent(saved: Pair<Uri, String>): PendingIntent {
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(saved.first, saved.second)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return PendingIntent.getActivity(this, saved.first.hashCode(), view, pendingFlags())
+    }
 
-        val line = if (total > 0)
+    private fun ongoing(label: String, kind: String, have: Long, total: Long,
+                        rate: Double): Notification {
+        val cancel = PendingIntent.getService(this, 1,
+            Intent(this, TransferService::class.java).setAction(ACTION_CANCEL), pendingFlags())
+
+        val moved = if (total > 0)
             human(have) + " of " + human(total) +
                 (if (rate > 0) " · " + human(rate.toLong()) + "/s" else "")
         else human(have)
+        val waiting = queue.size
+        val line = if (waiting > 0)
+            moved + " · " + waiting + " " + getString(R.string.waiting) else moved
 
         val builder = NotificationCompat.Builder(this, CHANNEL)
-            .setContentTitle(label)
+            .setContentTitle(
+                (if (kind == KIND_UPLOAD) getString(R.string.sending) + " " else "") + label)
             .setContentText(line)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(if (kind == KIND_UPLOAD) android.R.drawable.stat_sys_upload
+                          else android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openAppIntent())
@@ -484,25 +713,28 @@ class DownloadService : Service() {
         return builder.build()
     }
 
-    private fun notifyOngoing(label: String, have: Long, total: Long, rate: Double) {
+    private fun notifyOngoing(label: String, kind: String, have: Long, total: Long,
+                              rate: Double) {
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(ONGOING_ID, ongoing(label, have, total, rate))
+            .notify(ONGOING_ID, ongoing(label, kind, have, total, rate))
     }
 
     /** A separate, dismissible notification so the result survives the service. */
-    private fun finished(label: String, failure: String?) {
+    private fun finished(label: String, failure: String?, saved: Pair<Uri, String>?) {
         val title = if (failure == null) getString(R.string.saved) + " " + label
-                    else getString(R.string.download_failed)
-        val body = if (failure == null) getString(R.string.saved_where)
-                   else label + "\n\n" + failure
+                    else getString(R.string.transfer_failed)
+        val detail = failure ?: (
+            if (saved != null) getString(R.string.tap_to_open)
+            else getString(R.string.saved_where))
         val builder = NotificationCompat.Builder(this, CHANNEL)
             .setContentTitle(title)
-            .setContentText(if (failure == null) getString(R.string.saved_where) else failure)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText(if (failure == null) detail else label + "\n\n" + failure))
             .setSmallIcon(if (failure == null) android.R.drawable.stat_sys_download_done
                           else android.R.drawable.stat_notify_error)
             .setAutoCancel(true)
-            .setContentIntent(openAppIntent())
+            .setContentIntent(if (saved != null) openFileIntent(saved) else openAppIntent())
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .notify(label.hashCode() and 0xffff, builder.build())
     }
@@ -527,7 +759,7 @@ class DownloadService : Service() {
         }
         try {
             val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "filebridge:download")
+            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "filebridge:transfer")
                 .also {
                     it.setReferenceCounted(false)
                     it.acquire(3 * 60 * 60 * 1000L)  // ceiling; released in finally

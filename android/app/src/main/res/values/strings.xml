@@ -57,4 +57,14 @@
     <string name="saved">Saved</string>
     <string name="saved_where">In Downloads / FileBridge</string>
     <string name="download_failed">Download failed</string>
+    <string name="transfer_failed">Transfer failed</string>
+    <string name="sending">Sending</string>
+    <string name="sent_to_mac">Sent to the Mac</string>
+    <string name="waiting">waiting</string>
+    <string name="tap_to_open">Tap to open · Downloads / FileBridge</string>
+    <string name="open">Open</string>
+    <string name="download_again">Download again</string>
+    <string name="already_downloaded">Already downloaded</string>
+    <string name="no_player">Nothing on this phone can open that file</string>
+    <string name="queued">Queued</string>
 </resources>

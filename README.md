@@ -90,7 +90,7 @@ without installing the app.
 │ FileBridge.app               │        │ File Bridge (Kotlin)      │
 │   launcher.sh                │        │   MainActivity            │
 │     └─ spawns, then exits ───┼──┐     │     ├─ ZXing scanner      │
-│                              │  │     │     ├─ DownloadService    │
+│                              │  │     │     ├─ TransferService    │
 │ filebridge.py  (HTTP :8001)  │◀─┘     │     └─ multipart upload   │
 │   ├─ /connect   panel  local │◀───────┤ /api/status  (localhost)  │
 │   ├─ /api/list  browse       │        │ /api/list    (token)      │
