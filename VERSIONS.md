@@ -7,7 +7,7 @@ do not have to move together — only bump what you actually changed.
 |---|---|---|
 | Server | **1.11.1** | `filebridge.py` → `APP_VERSION` |
 | Mac app | **1.11.1** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.10.1** (code 12) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Android app | **1.11.0** (code 13) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -124,6 +124,31 @@ over the previous one**, so bump it on every APK you hand to the phone.
 
 ## Android app
 
+### 1.11.0 (versionCode 13)
+- **Sending shows progress, and survives the screen going off.** Uploads ran on
+  the Activity's own thread pool with no wifi lock and no notification — the same
+  fault that killed downloads before 1.10.0, except uploads still had it and
+  nobody had noticed, because the only thing on screen was "sending 1 file(s)…"
+  whether it worked or not. They now go through the service alongside downloads,
+  with a progress notification and the radio held awake.
+- **A queued job could be dropped silently.** The worker polled the queue, saw
+  it empty, and exited — while a job arriving in that window found the thread
+  still alive, added itself, and was never claimed. The tap looked accepted and
+  nothing happened. The queue is now only declared empty while holding the lock a
+  new job must also take.
+- **The notification says how many are waiting**, and a second tap no longer
+  relabels the notification of the file already in flight. Transfers run one at a
+  time on purpose: two large ones over a single wifi link finish later than the
+  same two back to back, and one progress bar cannot honestly describe both.
+- **Tapping a finished file opens it.** The completion notification launches a
+  player (`ACTION_VIEW`) rather than reopening this app, and tapping an
+  already-downloaded row in the list offers Open / Download again instead of
+  quietly fetching it a second time. Android 9 and older reach the file through
+  a `FileProvider`; from 10 the MediaStore uri is already openable.
+- **Uploads still cannot resume** — the server takes one multipart POST with no
+  offset endpoint, so an interrupted send restarts. The failure now says so, and
+  says how far it got. That endpoint is the next thing worth building.
+
 ### 1.10.1 (versionCode 12)
 - The Camera permission row showed the *files* icon — the only icon set had no
   camera in it, so a placeholder was left in and never replaced.
@@ -138,7 +163,8 @@ over the previous one**, so bump it on every APK you hand to the phone.
   15.9 s and 16.2 s — three different byte counts, one clock, i.e. the phone's
   15 s display timeout. It never once asked for a byte range afterwards, even
   with the server sending an ETag.
-- `DownloadService` is a foreground service holding a **WifiLock**
+- `DownloadService` (renamed `TransferService` in 1.11.0) is a foreground
+  service holding a **WifiLock**
   (`FULL_LOW_LATENCY`, or `FULL_HIGH_PERF` below Android 10) and a partial
   WakeLock while bytes are moving, with its own resume loop: `Range: bytes=N-`
   plus `If-Match` after every drop, backoff between tries, and a give-up only

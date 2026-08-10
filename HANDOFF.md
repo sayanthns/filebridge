@@ -12,7 +12,7 @@ Last updated: 2026-08-10.
 |---|---|---|
 | Server (`filebridge.py`) | 1.11.1 | Working. Browse, download (Range + ETag), upload, pause/resume |
 | Mac app | 1.11.1 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
-| Android app | 1.10.1 (code 12) | Working. Confirmed on the author's phone, screen off |
+| Android app | 1.11.0 (code 13) | Working. Both directions confirmed on the phone, screen off |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
 the other:
@@ -24,8 +24,10 @@ the other:
    slept with the screen: three attempts at a 707 MB file died at **15.8 s,
    15.9 s and 16.2 s** — three different byte counts, one clock, matching a 15 s
    display timeout — and it never issued a single ranged request afterwards.
-   Android 1.10.0 drops it for `DownloadService`, which holds a WifiLock and a
-   WakeLock and runs its own `Range:` resume loop.
+   Android 1.10.0 drops it for `TransferService`, which holds a WifiLock and a
+   WakeLock and runs its own `Range:` resume loop. **Uploads had the identical
+   hole until 1.11.0** — they ran on the Activity's pool with no lock and no
+   progress display, so a big send died on screen-off and said nothing.
 
 Both landed and a large file now completes on the phone with the screen off.
 The shape of a healthy transfer in `~/.filebridge/gui.log` is several `TRANSFER`
@@ -37,8 +39,8 @@ lines for one file, the later ones carrying `range=bytes=N-`, ending in
 no way to reach a phone. With USB debugging on, `adb install -r` and
 `adb logcat` are available and would end the guesswork.
 
-Released as [v1.11.1](https://github.com/sayanthns/filebridge/releases), with the
-1.10.1 APK attached.
+Released as [v1.12.0](https://github.com/sayanthns/filebridge/releases), with the
+1.11.0 APK attached.
 
 ## Verified vs assumed
 
@@ -55,12 +57,18 @@ path.
 - `/api/bye`: clears the connected client immediately
 - Quit → relaunch: server `0` → `1`, no lingering launcher process
 - APK: manifest, permissions, bundled zxing classes, portrait scanner
-  (`screenOrientation=0x1`), valid signature, `DownloadService` present in the
-  dex and declared `foregroundServiceType=dataSync`
+  (`screenOrientation=0x1`), valid signature, `TransferService` declared
+  `foregroundServiceType=dataSync`, `FileProvider` authority
+  `com.enfono.filebridge.files`
 - ETag and resume: `412` on a stale `If-Match`, full `200` on a stale
   `If-Range`, and a resumed tail whose sha1 matches the source byte for byte
 - **A 707 MB file completing on the phone with the screen off** (1.10.0 app,
-  1.11.0 server) — the bug that took four attempts to pin down
+  1.11.0 server) — the bug that took four attempts to pin down. A 1 GB file
+  followed, in 292 s
+- **Uploads through the service** (1.11.0 app): progress notification, and a
+  large send finishing with the screen off. Confirmed by use, not by curl
+- **Tapping a finished download opens it** in a player rather than reopening the
+  app. Confirmed by use
 
 **Not verified — treat as unknown:**
 - **Phone-side visuals.** No Android device has ever been attached to this Mac
@@ -74,20 +82,24 @@ path.
 
 ## Open items
 
-1. **No tests.** Everything above was `curl` by hand. The commands are listed at
+1. **Uploads cannot resume.** The server has one multipart `POST /api/upload`
+   with no offset, so an interrupted send starts over. An endpoint taking a byte
+   offset and appending to a temp file would close the last asymmetry between the
+   two directions — downloads already resume.
+2. **No tests.** Everything above was `curl` by hand. The commands are listed at
    the end of ARCHITECTURE.md and would convert directly into a shell test
    script — that is the highest-value next task.
-2. **Debug-signed APK.** Installs and upgrades fine, but is not distributable.
+3. **Debug-signed APK.** Installs and upgrades fine, but is not distributable.
    Needs a release keystore, which is a credential the owner must create.
-3. **No iOS app.** iPhones can use the browse view at `/?t=<key>` instead.
-4. **The Mac app has no Dock tile of its own** while running. It is a launcher
+4. **No iOS app.** iPhones can use the browse view at `/?t=<key>` instead.
+5. **The Mac app has no Dock tile of its own** while running. It is a launcher
    that exits by design (see ARCHITECTURE.md — keeping it alive is what caused
    the Force Quit bug). The panel window belongs to Chrome. A real tile needs a
    GUI process, and Tk cannot provide one on this machine.
-5. **Chrome reuses its `--app` window** for the same URL, and remembers its last
+6. **Chrome reuses its `--app` window** for the same URL, and remembers its last
    size — including full screen. If the panel comes up full screen, that is
    Chrome's memory, not the launcher, which asks for 560×880.
-6. **Plain HTTP.** Fine on a home LAN, wrong for shared wifi. TLS would mean a
+7. **Plain HTTP.** Fine on a home LAN, wrong for shared wifi. TLS would mean a
    self-signed cert and a trust prompt on the phone.
 
 ## This machine's quirks
