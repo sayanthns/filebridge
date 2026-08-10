@@ -37,8 +37,8 @@ lines for one file, the later ones carrying `range=bytes=N-`, ending in
 no way to reach a phone. With USB debugging on, `adb install -r` and
 `adb logcat` are available and would end the guesswork.
 
-Released as [v1.11.0](https://github.com/sayanthns/filebridge/releases), with the
-1.10.0 APK attached.
+Released as [v1.11.1](https://github.com/sayanthns/filebridge/releases), with the
+1.10.1 APK attached.
 
 ## Verified vs assumed
 
