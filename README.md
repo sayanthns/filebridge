@@ -141,6 +141,7 @@ scripts/build-mac-app.sh       assembles FileBridge.app
 scripts/build-android.sh       builds the debug APK
 VERSIONS.md                    per-component changelog and why each fix exists
 docs/ARCHITECTURE.md           design decisions, HTTP API, dead ends
+HANDOFF.md                     current state, what is verified vs assumed, open items
 ```
 
 Run the server directly while working on it:
@@ -156,6 +157,10 @@ Then `http://127.0.0.1:8001/connect` for the panel, or
 talk over a stable HTTP API and rarely need to move together. Bump only what
 changed, and always bump Android's `versionCode` or the APK will not install
 over the previous one. See [VERSIONS.md](VERSIONS.md).
+
+Picking this up cold? Start with **[HANDOFF.md](HANDOFF.md)** — it separates what
+is measured from what is only believed to work, and lists this machine's quirks
+(a broken `swiftc`, a Tk that renders nothing, a TCC-protected `~/Documents`).
 
 ## Known limits
 
