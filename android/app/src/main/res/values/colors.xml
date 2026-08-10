@@ -9,4 +9,7 @@
     <color name="line">#E4E7EC</color>
     <color name="surface">#FFFFFF</color>
     <color name="canvas">#F4F6FA</color>
+    <color name="danger">#D92D20</color>
+    <color name="ok">#129D5E</color>
+    <color name="warn">#B54708</color>
 </resources>

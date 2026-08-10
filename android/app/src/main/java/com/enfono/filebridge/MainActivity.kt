@@ -1,6 +1,14 @@
 package com.enfono.filebridge
 
+import android.Manifest
 import android.app.DownloadManager
+import android.content.pm.PackageManager
+import android.net.Uri as AndroidUri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import android.widget.ImageView
+import androidx.core.content.ContextCompat
 import android.content.Intent
 import android.content.Context
 import android.database.Cursor
@@ -42,6 +50,9 @@ import java.util.concurrent.Executors
  * notification, and resumes over Range if the wifi drops — which matters when
  * the files are hundreds of megabytes.
  */
+private const val TAB_FILES = 0
+private const val TAB_SETTINGS = 1
+
 class MainActivity : AppCompatActivity() {
 
     private data class Row(
@@ -54,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     )
 
     private val io = Executors.newFixedThreadPool(3)
+    private var currentTab = TAB_FILES
     private val ui = Handler(Looper.getMainLooper())
 
     private var base = ""      // http://ip:port
@@ -72,6 +84,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var pathText: TextView
     private lateinit var listView: ListView
+    private lateinit var settingsView: View
+    private lateinit var permBanner: TextView
 
     private val picker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -88,6 +102,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val askNotifications = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { renderSettings() }
+
+    private val askCamera = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        renderSettings()
+        renderPermBanner()
+        if (granted) launchScanner()
+    }
+
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         setContentView(R.layout.activity_main)
@@ -100,6 +126,8 @@ class MainActivity : AppCompatActivity() {
         urlInput = findViewById(R.id.urlInput)
         statusText = findViewById(R.id.statusText)
         pathText = findViewById(R.id.pathText)
+        settingsView = findViewById(R.id.settings)
+        permBanner = findViewById(R.id.permBanner)
         listView = findViewById(R.id.fileList)
         listView.adapter = Adapter()
 
@@ -119,18 +147,19 @@ class MainActivity : AppCompatActivity() {
             load("")
         }
 
+        findViewById<View>(R.id.tabFiles).setOnClickListener { showTab(TAB_FILES) }
+        findViewById<View>(R.id.tabSettings).setOnClickListener { showTab(TAB_SETTINGS) }
+        wireSettings()
+
         findViewById<Button>(R.id.scanBtn).setOnClickListener {
-            val options = ScanOptions()
-                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("Point at the QR on your Mac")
-                .setBeepEnabled(false)
-                .setOrientationLocked(true)
-            scanner.launch(options)
+            // Ask at the moment of use, with the reason obvious from context,
+            // rather than a cold prompt on first launch.
+            if (has(Manifest.permission.CAMERA)) launchScanner()
+            else askCamera.launch(Manifest.permission.CAMERA)
         }
 
         findViewById<Button>(R.id.refreshBtn).setOnClickListener { load(cwd) }
 
-        findViewById<Button>(R.id.disconnectBtn).setOnClickListener { disconnect() }
         findViewById<Button>(R.id.uploadBtn).setOnClickListener {
             picker.launch(arrayOf("*/*"))
         }
@@ -144,6 +173,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         installBackBehaviour()
+        paintTabs()
+        renderPermBanner()
 
         // A QR scan arrives as a filebridge:// intent and wins over the saved
         // link, since scanning is the user asking to connect to that machine.
@@ -159,6 +190,7 @@ class MainActivity : AppCompatActivity() {
             object : androidx.activity.OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     when {
+                        currentTab == TAB_SETTINGS -> showTab(TAB_FILES)
                         browser.visibility != View.VISIBLE -> {
                             isEnabled = false
                             onBackPressedDispatcher.onBackPressed()
@@ -173,6 +205,166 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             })
+    }
+
+    private fun launchScanner() {
+        val options = ScanOptions()
+            .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            .setPrompt(getString(R.string.scan_help))
+            .setBeepEnabled(false)
+            .setOrientationLocked(true)
+        scanner.launch(options)
+    }
+
+    // ------------------------------------------------------------ navigation
+
+    private fun showTab(tab: Int) {
+        currentTab = tab
+        val onFiles = tab == TAB_FILES
+        settingsView.visibility = if (onFiles) View.GONE else View.VISIBLE
+        if (onFiles) {
+            val connected = base.isNotEmpty() && rows.isNotEmpty()
+            browser.visibility = if (connected) View.VISIBLE else View.GONE
+            connectBar.visibility = if (connected) View.GONE else View.VISIBLE
+        } else {
+            browser.visibility = View.GONE
+            connectBar.visibility = View.GONE
+            renderSettings()
+        }
+        paintTabs()
+    }
+
+    private fun paintTabs() {
+        val active = ContextCompat.getColor(this, R.color.brand)
+        val idle = ContextCompat.getColor(this, R.color.muted)
+        val onFiles = currentTab == TAB_FILES
+        findViewById<ImageView>(R.id.tabFilesIcon).setColorFilter(if (onFiles) active else idle)
+        findViewById<TextView>(R.id.tabFilesLabel).setTextColor(if (onFiles) active else idle)
+        findViewById<ImageView>(R.id.tabSettingsIcon).setColorFilter(if (onFiles) idle else active)
+        findViewById<TextView>(R.id.tabSettingsLabel).setTextColor(if (onFiles) idle else active)
+    }
+
+    // ------------------------------------------------------------ permissions
+
+    private fun has(permission: String) =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun batteryUnrestricted(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun wireSettings() {
+        findViewById<View>(R.id.rowNotif).setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 33 && !has(Manifest.permission.POST_NOTIFICATIONS)) {
+                askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else openAppSettings()
+        }
+        findViewById<View>(R.id.rowCamera).setOnClickListener {
+            if (has(Manifest.permission.CAMERA)) openAppSettings()
+            else askCamera.launch(Manifest.permission.CAMERA)
+        }
+        findViewById<View>(R.id.rowBattery).setOnClickListener { askBattery() }
+        findViewById<View>(R.id.rowAppInfo).setOnClickListener { openAppSettings() }
+        findViewById<View>(R.id.rowDisconnect).setOnClickListener {
+            disconnect()
+            showTab(TAB_FILES)
+        }
+        findViewById<View>(R.id.rowSource).setOnClickListener {
+            open("https://github.com/sayanthns/filebridge")
+        }
+    }
+
+    /** Android requires the system dialog for this; it cannot be granted silently. */
+    private fun askBattery() {
+        if (batteryUnrestricted()) { openBatterySettings(); return }
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                AndroidUri.parse("package:" + packageName)))
+        } catch (e: Exception) {
+            openBatterySettings()
+        }
+    }
+
+    private fun openBatterySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        } catch (e: Exception) {
+            openAppSettings()
+        }
+    }
+
+    private fun openAppSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                AndroidUri.parse("package:" + packageName)))
+        } catch (e: Exception) {
+            toast("Could not open Android settings")
+        }
+    }
+
+    private fun open(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, AndroidUri.parse(url)))
+        } catch (e: Exception) {
+            toast("No browser available")
+        }
+    }
+
+    private fun renderSettings() {
+        val ok = ContextCompat.getColor(this, R.color.ok)
+        val warn = ContextCompat.getColor(this, R.color.warn)
+
+        // Notifications: only a real permission from Android 13. Saying
+        // "not needed" is honest; showing a dead Grant button is not.
+        val notifNeeded = Build.VERSION.SDK_INT >= 33
+        val notifOk = !notifNeeded || has(Manifest.permission.POST_NOTIFICATIONS)
+        setRow(R.id.subNotif, R.id.actNotif,
+            if (!notifNeeded) getString(R.string.not_needed)
+            else if (notifOk) "Download progress will be shown"
+            else "Downloads will run without any progress shown",
+            if (notifOk) getString(R.string.allowed) else getString(R.string.grant),
+            if (notifOk) ok else warn)
+
+        val camOk = has(Manifest.permission.CAMERA)
+        setRow(R.id.subCamera, R.id.actCamera,
+            if (camOk) "Used only to scan the QR on your Mac"
+            else "Needed to scan the QR; you can paste the link instead",
+            if (camOk) getString(R.string.allowed) else getString(R.string.grant),
+            if (camOk) ok else warn)
+
+        val batOk = batteryUnrestricted()
+        setRow(R.id.subBattery, R.id.actBattery,
+            if (batOk) "Large downloads can finish in the background"
+            else "Android may stop large downloads in the background",
+            if (batOk) getString(R.string.allowed) else getString(R.string.fix),
+            if (batOk) ok else warn)
+
+        findViewById<TextView>(R.id.subServer).text =
+            if (base.isEmpty()) getString(R.string.not_connected) else base
+        findViewById<TextView>(R.id.subVersion).text =
+            "Version " + com.enfono.filebridge.BuildConfig.VERSION_NAME +
+            " (" + com.enfono.filebridge.BuildConfig.VERSION_CODE + ")  ·  " + packageName
+    }
+
+    private fun setRow(subId: Int, actionId: Int, sub: String, action: String, colour: Int) {
+        findViewById<TextView>(subId).text = sub
+        val act = findViewById<TextView>(actionId)
+        act.text = action
+        act.setTextColor(colour)
+    }
+
+    private fun renderPermBanner() {
+        // Only nag where it blocks something: the connect screen's Scan button.
+        permBanner.visibility =
+            if (has(Manifest.permission.CAMERA)) View.GONE else View.VISIBLE
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Permissions may have changed in Android settings while we were away.
+        renderPermBanner()
+        if (currentTab == TAB_SETTINGS) renderSettings()
     }
 
     override fun onNewIntent(incoming: Intent?) {
@@ -514,17 +706,23 @@ class MainActivity : AppCompatActivity() {
         override fun getView(position: Int, convert: View?, parentView: ViewGroup?): View {
             val view = convert ?: layoutInflater.inflate(R.layout.row_file, parentView, false)
             val row = rows[position]
-            view.findViewById<TextView>(R.id.icon).text = when {
-                row.name == ".." -> "\u2191"
-                row.isDir -> "\u25B8"
-                row.done -> "\u2713"
-                else -> "\u2b07"
-            }
+            val icon = view.findViewById<ImageView>(R.id.icon)
+            icon.setImageResource(when {
+                row.name == ".." -> R.drawable.ic_arrow_up
+                row.isDir -> R.drawable.ic_folder
+                row.done -> R.drawable.ic_check
+                else -> R.drawable.ic_download
+            })
+            icon.setColorFilter(ContextCompat.getColor(this@MainActivity,
+                if (row.done && !row.isDir) R.color.ok else R.color.brand))
+            // Rows are tappable images + text; the label carries the meaning so
+            // the icon is decorative for a screen reader.
+            view.contentDescription = row.pretty + ", " + row.meta
             view.findViewById<TextView>(R.id.name).text = row.pretty
             val meta = view.findViewById<TextView>(R.id.meta)
             meta.text = if (row.done) row.meta + "  ·  on this phone" else row.meta
-            view.findViewById<TextView>(R.id.chevron).text =
-                if (row.isDir) "\u203A" else ""
+            view.findViewById<ImageView>(R.id.chevron).visibility =
+                if (row.isDir) View.VISIBLE else View.GONE
             // Dim, never hide: a taken file still has to be findable.
             view.alpha = if (row.done && !row.isDir) 0.55f else 1f
             return view

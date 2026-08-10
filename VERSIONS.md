@@ -7,7 +7,7 @@ do not have to move together — only bump what you actually changed.
 |---|---|---|
 | Server | **1.9.0** | `filebridge.py` → `APP_VERSION` |
 | Mac app | **1.9.0** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.5.0** (code 6) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Android app | **1.6.0** (code 7) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -98,6 +98,26 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Android app
+
+### 1.6.0 (versionCode 7)
+- **Settings tab with in-app permission management.** Bottom nav (Files /
+  Settings), reachable *before* connecting so permissions can be fixed first —
+  a blocked camera is exactly why Scan would seem to do nothing.
+- **Unrestricted-background request.** The likely cause of "Unable to download"
+  on large files: Android stopping the transfer once the app is backgrounded or
+  the screen sleeps. Android requires its own system dialog for this; no app can
+  grant it silently.
+- Camera is requested at the moment Scan is tapped, not cold on first launch.
+  Notification permission is only real on Android 13+, so older versions are
+  told "not needed" rather than shown a dead button.
+- Every permission row shows live status as **text** (`Allowed` / `Grant` /
+  `Fix`), never colour alone, with a plain-language reason.
+- Settings also carries connection info (which Mac, where downloads land,
+  Disconnect) and About (version, versionCode, package, source, licence).
+- **Real vector icons** replace the unicode glyphs (`▸ ✓ ⬇`), which were
+  font-dependent and rendered inconsistently across devices.
+- All UI text moved into `strings.xml`; shared row styles keep the 8dp rhythm
+  and 64dp touch height from drifting as rows are added.
 
 ### 1.5.0 (versionCode 6)
 - **Scanner opens in portrait.** ZXing's bundled `CaptureActivity` is declared
