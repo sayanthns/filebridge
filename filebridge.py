@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.11.1"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -522,6 +522,11 @@ class Handler(BaseHTTPRequestHandler):
         sent = 0
         began = time.time()
         outcome = "complete"
+        # A download is one long request with nothing else on the wire, so the
+        # connected-client marker would go stale mid-transfer and the panel would
+        # claim the phone had left while it was busy receiving a file.
+        self._note_client()
+        last_note = time.time()
         try:
             with open(path, "rb") as handle:
                 handle.seek(start)
@@ -533,6 +538,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(block)
                     sent += len(block)
                     remaining -= len(block)
+                    if time.time() - last_note > 10:
+                        self._note_client()
+                        last_note = time.time()
         except (BrokenPipeError, ConnectionResetError):
             outcome = "client-disconnected"
         except Exception as error:

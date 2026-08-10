@@ -26,7 +26,7 @@
     <string name="perm_notif">Download notifications</string>
     <string name="perm_camera">Camera</string>
     <string name="perm_battery">Unrestricted background</string>
-    <string name="perm_battery_why">Without this, Android may stop a large download when you leave the app or the screen turns off. It is the usual cause of "Unable to download".</string>
+    <string name="perm_battery_why">Without this, Android may stop a large download once you leave the app or the screen turns off, even though File Bridge keeps the wifi awake while a file is arriving.</string>
     <string name="open_app_settings">All app settings</string>
     <string name="open_app_settings_sub">Opens Android settings for this app</string>
     <string name="grant">Grant</string>

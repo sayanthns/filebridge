@@ -5,9 +5,9 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.11.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.11.0** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.10.0** (code 11) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Server | **1.11.1** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.11.1** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Android app | **1.10.1** (code 12) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -16,6 +16,13 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.11.1
+- **The panel stops claiming the phone left while it is downloading.** The
+  connected-client marker was only written by `/api/list`, and a download is one
+  long request with nothing else on the wire — so after the 45 s freshness
+  window the panel decided no phone was there and put the QR back, mid-transfer.
+  `/file` now marks the client when it starts and every 10 s while bytes move.
 
 ### 1.11.0
 - **Big downloads to the phone survive a dropped connection.** `/file` now sends
@@ -116,6 +123,12 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Android app
+
+### 1.10.1 (versionCode 12)
+- The Camera permission row showed the *files* icon — the only icon set had no
+  camera in it, so a placeholder was left in and never replaced.
+- The unrestricted-background explanation no longer quotes DownloadManager's
+  "Unable to download", which this app can no longer produce.
 
 ### 1.10.0 (versionCode 11)
 - **The app downloads files itself. DownloadManager is gone.** It runs transfers

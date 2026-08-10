@@ -10,9 +10,9 @@ Last updated: 2026-08-10.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.11.0 | Working. Browse, download (Range + ETag), upload, pause/resume |
-| Mac app | 1.11.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
-| Android app | 1.10.0 (code 11) | Working. Confirmed on the author's phone, screen off |
+| Server (`filebridge.py`) | 1.11.1 | Working. Browse, download (Range + ETag), upload, pause/resume |
+| Mac app | 1.11.1 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Android app | 1.10.1 (code 12) | Working. Confirmed on the author's phone, screen off |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
 the other:

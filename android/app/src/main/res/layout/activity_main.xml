@@ -340,7 +340,7 @@
 
                 <LinearLayout android:id="@+id/rowCamera" style="@style/SettingRow">
                     <ImageView android:id="@+id/iconCamera" style="@style/RowIcon"
-                        android:src="@drawable/ic_files" android:contentDescription="@null" />
+                        android:src="@drawable/ic_camera" android:contentDescription="@null" />
                     <LinearLayout style="@style/RowText">
                         <TextView style="@style/RowTitle" android:text="@string/perm_camera" />
                         <TextView android:id="@+id/subCamera" style="@style/RowSub" />
