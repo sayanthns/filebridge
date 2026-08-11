@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.11.1"
+APP_VERSION = "1.12.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -1215,6 +1215,17 @@ def main():
 
     load_state()
     token = args.token or secrets.token_urlsafe(9)
+
+    # The Finder Quick Actions ("Copy to Phone") need to know where to put
+    # things, and the folder is a command-line argument rather than a constant.
+    # Recording it here is what lets them work for someone serving a folder
+    # other than ~/FileBridge.
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(os.path.join(STATE_DIR, "root"), "w", encoding="utf-8") as handle:
+            handle.write(root)
+    except OSError:
+        pass
 
     try:
         server = Bridge(("0.0.0.0", args.port), Handler, root, token)

@@ -21,6 +21,28 @@ chmod 600 "$HOME/.filebridge/key"
 KEY="$(cat "$HOME/.filebridge/key")"
 mkdir -p "$HOME/FileBridge/to-phone" "$HOME/FileBridge/from-phone"
 
+# Finder right-click -> Quick Actions -> Copy / Move to Phone. Installed from
+# inside the bundle, and only rewritten when the shipped version changes, so
+# this costs nothing on a normal launch. Remove them with:
+#   python3 scripts/make_quick_actions.py --uninstall
+QA_SRC="$RES/QuickActions"
+QA_STAMP="$HOME/.filebridge/quick-actions"
+if [ -d "$QA_SRC" ]; then
+  QA_VERSION="$(cat "$QA_SRC/VERSION" 2>/dev/null)"
+  if [ "$(cat "$QA_STAMP" 2>/dev/null)" != "$QA_VERSION" ]; then
+    mkdir -p "$HOME/Library/Services"
+    for wf in "$QA_SRC"/*.workflow; do
+      [ -d "$wf" ] || continue
+      name="$(basename "$wf")"
+      rm -rf "$HOME/Library/Services/$name"
+      cp -R "$wf" "$HOME/Library/Services/$name"
+    done
+    echo "$QA_VERSION" > "$QA_STAMP"
+    # Ask the services registry to notice them without a logout.
+    /System/Library/CoreServices/pbs -update >/dev/null 2>&1
+  fi
+fi
+
 show_panel() {
   if [ -d "/Applications/Google Chrome.app" ]; then
     open -na "Google Chrome" --args --app="$URL" --window-size=560,880

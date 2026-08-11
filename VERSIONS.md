@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.11.1** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.11.1** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.12.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.12.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.11.0** (code 13) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,12 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.12.0
+- **Records the served folder** in `~/.filebridge/root`. The folder is a
+  command-line argument rather than a constant, so the Finder Quick Actions had
+  no way to know where to put things for anyone not using the default
+  `~/FileBridge`. Now they read it.
 
 ### 1.11.1
 - **The panel stops claiming the phone left while it is downloading.** The
@@ -94,6 +100,19 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.12.0
+- **Finder right-click: Copy to Phone / Move to Phone.** Two Quick Actions ship
+  inside the bundle and are installed to `~/Library/Services` on launch, then
+  left alone until the shipped version changes. Sending a file stops requiring
+  the app at all — right-click it where it already is.
+- Copy and move are deliberately **separate items** rather than one that guesses.
+  Moving a file into `to-phone` and letting the phone collect it removes the only
+  copy from where it was; that should be a thing you chose, not a default.
+- A name already in `to-phone` gets a numbered sibling instead of being
+  overwritten, and anything already inside the served folder is skipped — moving
+  a file onto itself is how you lose it.
+- Remove them with `python3 scripts/make_quick_actions.py --uninstall`.
 
 ### 1.5.0
 - **Reopens after you close the window.** The launcher used to `exec` the

@@ -18,6 +18,11 @@ chmod +x "$APP/Contents/Resources/tools/make_qr.sh"
 cp "$HERE/launcher.sh" "$APP/Contents/MacOS/FileBridge"
 chmod +x "$APP/Contents/MacOS/FileBridge"
 
+# Finder Quick Actions ride inside the bundle; the launcher installs them into
+# ~/Library/Services on first run and refreshes them when this version changes.
+/usr/bin/python3 "$HERE/scripts/make_quick_actions.py" "$APP/Contents/Resources/QuickActions" >/dev/null
+echo "$VERSION" > "$APP/Contents/Resources/QuickActions/VERSION"
+
 if [ -f "$HERE/docs/icon/FileBridge.icns" ]; then
   cp "$HERE/docs/icon/FileBridge.icns" "$APP/Contents/Resources/FileBridge.icns"
 fi

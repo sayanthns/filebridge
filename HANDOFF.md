@@ -10,8 +10,8 @@ Last updated: 2026-08-10.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.11.1 | Working. Browse, download (Range + ETag), upload, pause/resume |
-| Mac app | 1.11.1 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Server (`filebridge.py`) | 1.12.0 | Working. Browse, download (Range + ETag), upload, pause/resume |
+| Mac app | 1.12.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
 | Android app | 1.11.0 (code 13) | Working. Both directions confirmed on the phone, screen off |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -69,6 +69,11 @@ path.
   large send finishing with the screen off. Confirmed by use, not by curl
 - **Tapping a finished download opens it** in a player rather than reopening the
   app. Confirmed by use
+- **Finder Quick Actions**: both workflows run via `automator -i` against a
+  throwaway root — copy leaves the original, move does not, a name collision
+  becomes `name-2.ext` rather than an overwrite, and a file already inside the
+  served folder is skipped. Then the installed copy was run against the real
+  folder
 
 **Not verified — treat as unknown:**
 - **Phone-side visuals.** No Android device has ever been attached to this Mac
@@ -122,6 +127,9 @@ These cost hours. They are properties of the environment, not the code.
 |---|---|---|
 | `~/FileBridge/to-phone` | Mac → phone | |
 | `~/FileBridge/from-phone` | phone → Mac | |
+| `~/.filebridge/root` | which folder is being served | Written at startup; the Quick Actions read it |
+| `~/.filebridge/quick-actions` | version of the installed Quick Actions | Launcher reinstalls when it differs from the bundle's |
+| `~/Library/Services/*.workflow` | Copy / Move to Phone | Installed by the launcher. `make_quick_actions.py --uninstall` removes them |
 | `~/.filebridge/key` | access key | **Secret.** Persisted so pairing survives restarts. Delete to unpair every device |
 | `~/.filebridge/state.json` | taken flags, cached durations | Safe to delete |
 | `~/.filebridge/gui.log` | server + launcher output | First place to look when the app "does nothing" |

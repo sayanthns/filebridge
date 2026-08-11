@@ -17,6 +17,8 @@ because it has done its job.
 ## What it does
 
 - **Mac → phone.** Drop files in `~/FileBridge/to-phone`, tap them in the app.
+  Or right-click any file in Finder → **Quick Actions → Copy to Phone**
+  (there is a **Move to Phone** too, when you do not want a second copy).
 - **Phone → Mac.** Pick files in the app, they land in `~/FileBridge/from-phone`.
 - **Connect by QR.** Scan in-app, or with the phone's camera (deep link).
 - **Resumable downloads.** Range requests, so a dropped wifi link continues
@@ -139,6 +141,7 @@ tools/make_qr.sh               reads the link from the log, renders the QR
 android/                       Kotlin app, Gradle, no Android Studio needed
 scripts/build-mac-app.sh       assembles FileBridge.app
 scripts/build-android.sh       builds the debug APK
+scripts/make_quick_actions.py  builds the Finder Quick Actions (--uninstall removes them)
 VERSIONS.md                    per-component changelog and why each fix exists
 docs/ARCHITECTURE.md           design decisions, HTTP API, dead ends
 HANDOFF.md                     current state, what is verified vs assumed, open items
