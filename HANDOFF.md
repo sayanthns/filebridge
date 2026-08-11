@@ -4,7 +4,7 @@ For whoever picks this up next. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md
 alongside this — it holds the HTTP API and the dead ends. This file is state and
 honesty: what works, what is merely *believed* to work, and what is left.
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-11.
 
 ## Where things stand
 
@@ -12,7 +12,7 @@ Last updated: 2026-08-10.
 |---|---|---|
 | Server (`filebridge.py`) | 1.12.0 | Working. Browse, download (Range + ETag), upload, pause/resume |
 | Mac app | 1.12.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
-| Android app | 1.11.0 (code 13) | Working. Both directions confirmed on the phone, screen off |
+| Android app | 1.11.1 (code 14) | Working. Both directions confirmed on the phone, screen off |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
 the other:
@@ -34,13 +34,20 @@ The shape of a healthy transfer in `~/.filebridge/gui.log` is several `TRANSFER`
 lines for one file, the later ones carrying `range=bytes=N-`, ending in
 `complete`. A single `range=none` line with no follow-up is the old failure.
 
+**A VPN on the phone breaks everything, and looks like the wrong wifi.** A
+full-tunnel VPN (Proton, in the case that cost a session) routes `192.168.x.x`
+through the exit server, so the app cannot open a socket to the Mac at all and
+every symptom points at the network. Before debugging a "could not reach the Mac"
+report, check for a VPN badge. The fix is the VPN app's own "Allow LAN
+connections". App 1.11.1 detects it and says so.
+
 **`adb` exists on this machine** at `~/Library/Android/sdk/platform-tools/adb`
 — it is simply not on `PATH`, which is why earlier sessions concluded there was
 no way to reach a phone. With USB debugging on, `adb install -r` and
 `adb logcat` are available and would end the guesswork.
 
-Released as [v1.12.0](https://github.com/sayanthns/filebridge/releases), with the
-1.11.0 APK attached.
+Released as [v1.13.1](https://github.com/sayanthns/filebridge/releases), with the
+1.11.1 APK attached.
 
 ## Verified vs assumed
 
@@ -83,6 +90,9 @@ path.
 - **The panel reviving itself after a Quit** (1.9.0). The server restart is
   measured; the page waking back up is reasoned from the code, because driving a
   live browser session across a server restart was not possible here.
+- **The VPN warning** (1.11.1). `TRANSPORT_VPN` is the documented way to ask and
+  the string is compiled into the APK, but neither the Settings row nor the
+  reworded connect error has been seen on a screen with a VPN up.
 - **Any second machine.** Only ever run on one Mac, one phone, one network.
 
 ## Open items

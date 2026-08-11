@@ -57,6 +57,7 @@
     <string name="saved">Saved</string>
     <string name="saved_where">In Downloads / FileBridge</string>
     <string name="download_failed">Download failed</string>
+    <string name="vpn_warning">A VPN is on. It sends even local addresses through the tunnel, so this phone cannot reach your Mac. Turn on “Allow LAN connections” in the VPN app, or disconnect it.</string>
     <string name="transfer_failed">Transfer failed</string>
     <string name="sending">Sending</string>
     <string name="sent_to_mac">Sent to the Mac</string>

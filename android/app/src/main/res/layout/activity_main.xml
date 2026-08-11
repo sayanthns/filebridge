@@ -389,6 +389,22 @@
                     </LinearLayout>
                 </LinearLayout>
 
+                <!-- Only visible while a VPN actually holds the default route. A
+                     full tunnel makes the Mac unreachable and looks exactly like
+                     being on the wrong wifi, so it is worth saying out loud. -->
+                <TextView
+                    android:id="@+id/vpnWarning"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="#FFF4E5"
+                    android:minHeight="48dp"
+                    android:padding="12dp"
+                    android:text="@string/vpn_warning"
+                    android:textColor="#8A5300"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+
                 <LinearLayout style="@style/SettingRow">
                     <ImageView style="@style/RowIcon" android:src="@drawable/ic_download"
                         android:contentDescription="@null" />

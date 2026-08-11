@@ -7,7 +7,7 @@ do not have to move together — only bump what you actually changed.
 |---|---|---|
 | Server | **1.12.0** | `filebridge.py` → `APP_VERSION` |
 | Mac app | **1.12.0** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.11.0** (code 13) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Android app | **1.11.1** (code 14) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -142,6 +142,15 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Android app
+
+### 1.11.1 (versionCode 14)
+- **A VPN is named as the cause when one is on.** "Could not reach the Mac" listed
+  the wifi and Start sharing, but not the one condition that looks identical to
+  both: a full-tunnel VPN routes even `192.168.x.x` to the exit server, so a Mac
+  two metres away is unreachable. Detected via `TRANSPORT_VPN` rather than
+  guessed, so the message only appears when it is true.
+- Settings shows the same warning while a VPN holds the default route. It is a
+  live condition, not a permission, so there is nothing to grant or remember.
 
 ### 1.11.0 (versionCode 13)
 - **Sending shows progress, and survives the screen going off.** Uploads ran on

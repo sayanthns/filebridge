@@ -347,9 +347,39 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<TextView>(R.id.subServer).text =
             if (base.isEmpty()) getString(R.string.not_connected) else base
+
+        // Shown only while a VPN is up: it is a live condition, not a setting,
+        // so there is nothing to grant and nothing to remember.
+        val vpnRow = findViewById<TextView>(R.id.vpnWarning)
+        vpnRow.visibility = if (vpnActive()) View.VISIBLE else View.GONE
         findViewById<TextView>(R.id.subVersion).text =
             "Version " + com.enfono.filebridge.BuildConfig.VERSION_NAME +
             " (" + com.enfono.filebridge.BuildConfig.VERSION_CODE + ")  ·  " + packageName
+    }
+
+    /**
+     * True when a VPN holds the default route. Worth detecting rather than
+     * guessing: a full-tunnel VPN sends even 192.168.x.x to the exit server, so
+     * the Mac two metres away is unreachable and every symptom points at the
+     * wifi instead. This cost a debugging session.
+     */
+    private fun vpnActive(): Boolean {
+        return try {
+            val manager = getSystemService(Context.CONNECTIVITY_SERVICE)
+                as android.net.ConnectivityManager
+            if (Build.VERSION.SDK_INT >= 23) {
+                val network = manager.activeNetwork ?: return false
+                manager.getNetworkCapabilities(network)
+                    ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+            } else {
+                @Suppress("DEPRECATION")
+                manager.allNetworkInfo.any {
+                    it.isConnected && it.type == android.net.ConnectivityManager.TYPE_VPN
+                }
+            }
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun setRow(subId: Int, actionId: Int, sub: String, action: String, colour: Int) {
@@ -530,9 +560,19 @@ class MainActivity : AppCompatActivity() {
                         status("Not connected")
                         browser.visibility = View.GONE
                         connectBar.visibility = View.VISIBLE
+                        // A VPN is named first when one is on, because it is the
+                        // one cause that looks exactly like the wifi being wrong:
+                        // a full tunnel routes even 192.168.x.x out to the exit
+                        // server, so the Mac on the same network is unreachable.
                         showConnectError(
-                            "Could not reach the Mac. Check both are on the same wifi " +
-                            "and that File Bridge is open with Start sharing pressed.")
+                            if (vpnActive())
+                                "Could not reach the Mac. A VPN is on, and it sends " +
+                                "even local addresses through the tunnel. Turn on " +
+                                "\"Allow LAN connections\" in the VPN app, or " +
+                                "disconnect it, then try again."
+                            else
+                                "Could not reach the Mac. Check both are on the same wifi " +
+                                "and that File Bridge is open with Start sharing pressed.")
                     }
                 }
             }
