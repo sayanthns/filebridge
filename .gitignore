@@ -4,6 +4,11 @@ android/build/
 android/.gradle/
 android/local.properties
 *.apk
+# ...except a released one. A loose APK at the repo root is not a durable place
+# for it - one went missing between a build and an install, and nothing here
+# deletes served files, so it could not be recovered. Releases live in dist/,
+# are committed, and are attached to the GitHub release.
+!dist/*.apk
 
 # python
 __pycache__/

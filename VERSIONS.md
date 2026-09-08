@@ -337,8 +337,26 @@ cd android && JAVA_HOME=/opt/homebrew/opt/openjdk@17 \
   ~/.gradle/wrapper/dists/gradle-8.2.1-all/*/gradle-8.2.1/bin/gradle assembleDebug
 ```
 
+or just `./scripts/build-android.sh`, which finds a Gradle 8 and sets `JAVA_HOME`
+itself. It writes two copies: `FileBridge-<ver>.apk` at the root, and
+`dist/FileBridge-<ver>.apk`.
+
 Then copy the APK into `~/FileBridge/to-phone/` and install it from the phone —
-the running server is how you deliver its own updates.
+the running server is how you deliver its own updates. **Copy, do not move.** A
+loose APK at the repo root is not a durable home for one: a 1.12.0 build went
+missing between the build and the install, the Trash was empty, and nothing in
+this project deletes served files, so there was nothing to recover. The `dist/`
+copy is the one that is committed (`*.apk` is ignored, `!dist/*.apk` is not) and
+attached to the GitHub release:
+
+```bash
+git add dist/FileBridge-<ver>.apk && git commit -m "Release <ver>"
+git tag -a v<repo-ver> -m "..." && git push origin main --tags
+gh release create v<repo-ver> dist/FileBridge-<ver>.apk --title "..." --notes "..."
+```
+
+The repo tag is its own sequence and does **not** track any one component —
+`v1.13.1` shipped with server 1.12.0.
 
 Debug-signed. Installs fine and upgrades in place because the key is stable, but
 Play Store distribution would need a release keystore.

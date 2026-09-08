@@ -27,4 +27,9 @@ fi
 APK="app/build/outputs/apk/debug/app-debug.apk"
 VER="$("$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
 cp "$APK" "$HERE/FileBridge-$VER.apk"
-echo "built FileBridge-$VER.apk"
+# Also into dist/, which is the copy that gets committed and attached to the
+# release. The root copy is a convenience for `cp`-ing to to-phone and stays
+# gitignored; dist/ is the one that survives.
+mkdir -p "$HERE/dist"
+cp "$APK" "$HERE/dist/FileBridge-$VER.apk"
+echo "built FileBridge-$VER.apk (and dist/FileBridge-$VER.apk)"
