@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.18.0"
+APP_VERSION = "1.18.1"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -1231,7 +1231,7 @@ button:disabled{opacity:.45;cursor:default}
 
   <div class="card" id="qrcard"></div>
 
-  <div class="ver">version __VER__</div>
+  <div class="ver" id="ver">version __VER__</div>
 </div>
 
 <script>
@@ -1383,6 +1383,10 @@ async function poll(){
     if(dead){ dead = false; shownQr = false; }   // server is back
     link = s.link; sharing = s.sharing; client = s.client || ""; usb = s.usb || null;
     tether = s.tether || null;
+    // __VER__ is baked in when the page is served, and this window survives a
+    // server restart by design — so a panel left open kept claiming whichever
+    // version happened to serve its HTML. Take it from the poll instead.
+    if(s.version) $("ver").textContent = "version " + s.version;
     // A connected phone, or a cable with nothing on it, both make the last
     // failure stale. Leaving it up would be its own kind of lying.
     if(client === "usb" || !(usb && (usb.devices || []).length)) pairError = "";

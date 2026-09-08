@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.18.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.18.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.18.1** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.18.1** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,17 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.18.1
+- **The panel stops misreporting its own version.** `__VER__` is substituted
+  when the HTML is served and `poll()` never touched it, so a panel left open
+  across a Quit and relaunch went on claiming whichever version served its
+  page — observed reading 1.17.0 against a 1.18.0 server. That matters more
+  here than it looks: the whole convention is three independently versioned
+  pieces, and the panel is where you read one of them. `/api/status` already
+  returned `version`; the footer now takes it from there. Verified by serving
+  the page from a 9.9.9 build, swapping the server underneath the open window,
+  and watching the footer correct itself with no reload.
 
 ### 1.18.0
 - **The access key is no longer written into `gui.log`.** This one predates the
@@ -239,6 +250,9 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.18.1
+- Ships server 1.18.1.
 
 ### 1.18.0
 - Ships server 1.18.0.

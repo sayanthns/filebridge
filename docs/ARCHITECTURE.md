@@ -295,6 +295,14 @@ Redact before printing, and mind the boundary: `t=` also occurs inside `act=`
 and `dat=`, so `t=[^&\s}]+` blanks the whole line and destroys the diagnostic
 it was added to capture. `(?<![A-Za-z0-9_])t=` is the pattern that works.
 
+**Template substitution for anything that can change under an open page.**
+The panel window is deliberately built to survive a server restart — that is
+what the revive-on-poll behaviour is for — so anything baked in at render time
+becomes a lie the moment the server is replaced. `__VER__` did exactly that: a
+panel open across a relaunch reported the old version indefinitely. If the page
+outlives the process, the value belongs in `/api/status`, not in the template.
+`__LINK__` is only safe because `poll()` overwrites it.
+
 **Setting a UI message and then re-rendering.** The panel's Pair button wrote
 the server's error into the hint and then called `poll()`, whose `render()`
 overwrote it with the button's own optimistic description. A real
