@@ -10,8 +10,8 @@ Last updated: 2026-09-08.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.15.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
-| Mac app | 1.15.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Server (`filebridge.py`) | 1.16.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
+| Mac app | 1.16.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
 | Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -58,8 +58,26 @@ Untried on-device leads, in likelihood order: the toggle silently reverting on
 replug, an HDB / "allow HiSuite to use HDB" gate, and an HONOR ID sign-in
 precondition that is widely reported on global MagicOS.
 
-**And tethering does not work on macOS either. Both cable paths are dead on
-this pair of machines.** This is the conclusion of the whole exercise, so do not
+**adb HAS seen this phone once, and the tunnel came up.** This contradicts the
+paragraph below it, so read both. A `Pair over cable` press logged
+`POST /api/usb 502`, and 502 is only reachable *past* the no-devices check —
+while the panel's green dot requires a non-empty `armed`. So at that moment
+`adb devices` returned the phone **and `adb reverse` succeeded**. What failed
+was `adb shell am start`, i.e. the shortcut, not the transport. The device was
+gone from `adb devices` again minutes later, with RNDIS tethering still holding
+`idProduct` 4234.
+
+Nobody saw that 502 message, because the panel overwrote it — see server
+1.16.0. The lesson is the general one: a UI message set from an event handler
+and then followed by a re-render is a message nobody reads.
+
+So the adb path is **closer to working than "dead"**. The thing to try next is
+turning USB tethering *off* so the phone stops holding the RNDIS config, then
+pressing Pair over cable, and if the app still will not launch itself, using
+**Show cable QR** — once the tunnel is armed, scanning the loopback link gets
+the phone there just as well.
+
+**Tethering, separately, does not work on macOS at all.** This is the conclusion of the whole exercise, so do not
 re-run it hoping for a different answer. Turning USB tethering on *did* take
 effect — the phone rebuilt its USB function set (`idProduct` 4221 → 4234,
 unlike the adb attempt, which never changed it) and published:
@@ -204,6 +222,9 @@ path.
   The command strings are right — the device-side shell quoting was checked by
   round-tripping a token containing a `'` through `sh -c` — but nothing has
   spoken to a phone
+- **Why `adb shell am start` refused.** Only its exit code and the absence of
+  "Error" in its output are checked; the real stderr was never captured,
+  because the panel threw the message away. Worth logging next time
 - **The transport fallback on the phone** (`url_wifi` / `url_usb`).
   Compile-verified, and the new strings are confirmed inside the APK, but no
   cable has been unplugged mid-session to watch it swap
@@ -226,8 +247,14 @@ path.
 
 ## Open items
 
-1. **Get one of the two wired paths onto real hardware.** Everything else about
-   both is measured; this is the only gap left.
+1. **Finish the adb path — it got further than any note here previously said.**
+   The tunnel has been armed against this phone once. Turn USB tethering off
+   first (it holds the phone in the RNDIS config, `idProduct` 4234), confirm
+   `adb devices` lists it, press Pair over cable, and if `am start` still fails
+   use Show cable QR. Why `am start` failed is the open question: the command
+   string round-trips a token containing a `'` correctly through `sh -c`, the
+   manifest's `filebridge` scheme filter is intact and exported, so the next
+   step is to capture the actual `am` stderr rather than only its exit code.
    - *Tethering* has been tried and is **dead on this Honor**: it tethers over
      RNDIS and macOS has no driver. Only worth retrying with a phone that
      tethers over CDC ECM or NCM, in which case `ifconfig` should show a

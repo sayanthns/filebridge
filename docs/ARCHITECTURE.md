@@ -100,6 +100,12 @@ requiring it to view the page that reveals it is circular.
 | `/api/open` | POST | `{folder}` — reveal `to-phone`/`from-phone` in Finder |
 | `/api/usb` | POST | Arm `adb reverse` and open the app on the phone, connected |
 
+`/api/usb` reports `armed` alongside any `error`, because the two halves fail
+independently: arming the tunnel is the hard part, and `adb shell am start`
+opening the app is only a shortcut. When arming worked and the launch did not,
+the phone can still be paired by scanning `/qr.png?usb=1` — the loopback link,
+which reaches the Mac through the tunnel that is already up.
+
 `/api/status` carries a `usb` object — `on`, `adb`, `port`, `link`, `devices`,
 `waiting`, `armed` — which the panel renders as the Cable card. It is read
 straight out of the module-level `USB` dict and **never shells out to adb**: the
@@ -272,6 +278,14 @@ quote the URL.
 zxing fills the first dex, so app code sits in `classes3.dex`. Grepping only
 `classes.dex` for a new string returns zero and looks exactly like a build that
 did not pick up the change.
+
+**Setting a UI message and then re-rendering.** The panel's Pair button wrote
+the server's error into the hint and then called `poll()`, whose `render()`
+overwrote it with the button's own optimistic description. A real
+`POST /api/usb 502` — *"Tunnel is up, but the app would not open"* — was
+therefore never once seen on screen, while the card claimed the opposite. Any
+message that outlives the event that produced it needs to live in state the
+renderer reads, not in the DOM the renderer rewrites.
 
 **Preview for showing the QR.** An AppleScript `display dialog` stays frontmost
 and hid it. Anything modal will.

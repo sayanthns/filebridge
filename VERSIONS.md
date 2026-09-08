@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.15.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.15.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.16.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.16.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,29 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.16.0
+- **The panel stops overwriting the reason pairing failed.** The button set the
+  hint and then called `poll()`, so `render()` immediately replaced the real
+  failure with the button's own optimistic description. This was not
+  theoretical: a press logged `POST /api/usb 502` while the card went on
+  reading *"Opens the app on the phone already connected"* — and the 502 was
+  the message that mattered. `pairError` is now sticky, shown in place of the
+  computed hint, and cleared only when a phone connects or the cable empties.
+- **A failed `am start` is no longer the end of it.** `/api/usb` now reports
+  `armed` separately from the pairing, because arming the tunnel is the hard
+  part and it succeeded — only the shortcut failed. Once `adb reverse` is up
+  the phone can reach us on its own `127.0.0.1`, so a scan gets there just as
+  well as a deep link: `/qr.png?usb=1` encodes the loopback link, the panel
+  flips to it by itself on that failure, and "Show cable QR" now appears for an
+  armed tunnel as well as for tethering.
+- The QR button's label moved into `renderUsb()`. It was set only in the click
+  handler, so the pairing handler flipping `wantCableQr` left it stale.
+- Observed while fixing this: **adb did briefly see the phone and the reverse
+  tunnel did come up.** 502 is only reachable past the no-devices check, and the
+  green dot needs a non-empty `armed`. So the adb path is closer to working on
+  this hardware than the earlier sessions concluded — what failed was
+  `adb shell am start`, not the tunnel.
 
 ### 1.15.0
 - **Says so when the phone is tethering in a form macOS cannot use.** Turning
@@ -180,6 +203,10 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.16.0
+- Ships server 1.16.0: the Cable card keeps the real pairing error, and can
+  hand you a QR for an armed tunnel.
 
 ### 1.15.0
 - Ships server 1.15.0, so the Cable card can tell you RNDIS is the problem.

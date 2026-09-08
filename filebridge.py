@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.16.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -520,7 +520,15 @@ class Handler(BaseHTTPRequestHandler):
             # ?tether=1 encodes the USB-tethered address instead of the wifi
             # one, so pairing over the cable is still a scan when there is no
             # adb to fire a deep link with.
-            return self._qr_png(tether_ip() if query.get("tether") else None)
+            if query.get("tether"):
+                return self._qr_png(tether_ip())
+            # ?usb=1 encodes the loopback link. Once `adb reverse` is armed the
+            # phone can reach us on its own 127.0.0.1, so a scan gets there just
+            # as well as the deep link does — and `am start` was observed
+            # failing on a phone where the tunnel itself came up fine.
+            if query.get("usb"):
+                return self._qr_png("127.0.0.1")
+            return self._qr_png()
 
         # Paused: the phone is turned away, the Mac panel keeps working.
         if self._paused_out():
@@ -998,12 +1006,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if not armed:
             return self._json({"error": "adb could not set up the tunnel. "
-                                        "Replug the cable and try again."},
+                                        "Replug the cable and try again.",
+                               "armed": False},
                               HTTPStatus.BAD_GATEWAY)
         if not opened:
-            return self._json({"error": "Tunnel is up but the app would not "
-                                        "open. Is File Bridge installed on the "
-                                        "phone?"}, HTTPStatus.BAD_GATEWAY)
+            # The tunnel is the hard part and it worked; only the shortcut
+            # failed. Say which, because the phone can still be paired by
+            # scanning — and say so rather than making it sound fatal.
+            return self._json({"error": "Tunnel is up, but the app would not "
+                                        "open by itself. Press Show cable QR "
+                                        "and scan it in the app.",
+                               "armed": True},
+                              HTTPStatus.BAD_GATEWAY)
         return self._json({"paired": opened})
 
     def _deep_link(self, host=None):
@@ -1189,12 +1203,24 @@ const $ = id => document.getElementById(id);
 let link = "__LINK__";
 let sharing = true, client = "", shownQr = false, dead = false, usb = null,
     tether = null, wantCableQr = false;
+// What the last Pair over cable attempt said. It has to survive the poll that
+// follows the button press: setting the hint and then calling poll() meant
+// render() immediately overwrote the real failure with the button's own
+// optimistic description, and a genuine "the tunnel is up but the app would
+// not open" was never seen.
+let pairError = "";
 
 function el(tag, cls, text){
   const n = document.createElement(tag);
   if(cls) n.className = cls;
   if(text) n.textContent = text;
   return n;
+}
+
+function cableQrQuery(){
+  // Tethering is a real address; the adb tunnel is loopback. Same button,
+  // different link.
+  return (tether && tether.on) ? "tether=1&" : "usb=1&";
 }
 
 function renderUsb(){
@@ -1206,7 +1232,13 @@ function renderUsb(){
   const live = client === "usb";
   const tethered = !!(tether && tether.on);
   const rndis = !!(tether && !tether.on && tether.rndis);
-  $("usbqr").style.display = tethered && !live ? "" : "none";
+  // Offer the scan whenever something wired can actually carry it: a tethered
+  // interface, or an armed adb tunnel.
+  const armed = (usb.armed || []).length > 0;
+  $("usbqr").style.display = (tethered || armed) && !live ? "" : "none";
+  // Set here rather than in the click handler, because the pair handler can
+  // flip wantCableQr too and a label that only updates on click goes stale.
+  $("usbqr").textContent = wantCableQr ? "Show wifi QR" : "Show cable QR";
   let state, hint, offer = ready;
   if(rndis && !ready){
     state = "Tethering, but macOS cannot use it";
@@ -1245,7 +1277,7 @@ function renderUsb(){
   $("usbdot").classList.toggle("on",
     live || (usb.armed || []).length > 0 || tethered);
   $("usbstate").textContent = state;
-  $("usbhint").textContent = hint;
+  $("usbhint").textContent = pairError || hint;
   $("usbpair").style.display = offer ? "" : "none";
 }
 
@@ -1295,7 +1327,7 @@ function render(){
     shownQr = true;
     const img = el("img");
     img.id = "qr"; img.alt = "QR code to connect";
-    img.src = "/qr.png?" + (wantCableQr ? "tether=1&" : "") + Date.now();
+    img.src = "/qr.png?" + (wantCableQr ? cableQrQuery() : "") + Date.now();
     const wrap = el("div", "qrwrap"); wrap.appendChild(img);
     card.replaceChildren(
       el("div", "qrtitle", wantCableQr ? "Scan to connect over the cable"
@@ -1314,6 +1346,9 @@ async function poll(){
     if(dead){ dead = false; shownQr = false; }   // server is back
     link = s.link; sharing = s.sharing; client = s.client || ""; usb = s.usb || null;
     tether = s.tether || null;
+    // A connected phone, or a cable with nothing on it, both make the last
+    // failure stale. Leaving it up would be its own kind of lying.
+    if(client === "usb" || !(usb && (usb.devices || []).length)) pairError = "";
     $("toCount").textContent = s.to_phone + (s.to_phone === 1 ? " file" : " files");
     $("fromCount").textContent = s.from_phone + (s.from_phone === 1 ? " file" : " files");
     render();
@@ -1333,18 +1368,23 @@ $("copy").onclick = async () => {
 };
 $("usbqr").onclick = () => {
   wantCableQr = !wantCableQr;
-  $("usbqr").textContent = wantCableQr ? "Show wifi QR" : "Show cable QR";
   shownQr = false;
   render();
 };
 $("usbpair").onclick = async () => {
   const b = $("usbpair");
   b.disabled = true; b.textContent = "Pairing...";
+  pairError = "";
   try{
     const s = await (await fetch("/api/usb", {method:"POST"})).json();
-    if(s.error) $("usbhint").textContent = s.error;
-  }catch(e){ $("usbhint").textContent = "Pairing failed - see ~/.filebridge/gui.log"; }
+    pairError = s.error || "";
+    // The tunnel is the hard part. When it came up and only the shortcut
+    // failed, put the scan in front of the user rather than making them find
+    // the button.
+    if(s.error && s.armed) wantCableQr = true;
+  }catch(e){ pairError = "Pairing failed - see ~/.filebridge/gui.log"; }
   b.disabled = false; b.textContent = "Pair over cable";
+  shownQr = false;
   poll();
 };
 $("stop").onclick  = async () => { await call("/api/stop");  poll(); };
