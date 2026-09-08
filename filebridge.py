@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.17.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -348,10 +348,29 @@ def push_deep_link(serial, link):
     quoted = "'" + link.replace("'", "'\\''") + "'"
     out = adb(["-s", serial, "shell", "am", "start",
                "-a", "android.intent.action.VIEW", "-d", quoted], timeout=20)
-    if not out or out.returncode != 0:
+    if not out:
+        print("  AM start: adb would not run", flush=True)
+        return False
+
+    said = ((out.stdout or "") + (out.stderr or "")).strip()
+    # Log it either way. This call failed once on a phone whose tunnel came up
+    # fine, and only the exit code was kept — so the one thing that would have
+    # explained it was thrown away.
+    #
+    # REDACT FIRST. On success `am` echoes the whole intent back, URI included,
+    # and that URI carries the access key: logging it verbatim would write the
+    # key into ~/.filebridge/gui.log, which is the first file anyone is told to
+    # read when the app misbehaves.
+    # The lookbehind matters: a bare `t=` also appears inside `act=` and
+    # `dat=`, and redacting those would throw away the very thing being logged.
+    safe = re.sub(r"(?<![A-Za-z0-9_])t=[^&\s}\"']+", "t=<key>",
+                  said).replace("\n", " | ")
+    print("  AM start: rc=" + str(out.returncode) + " " +
+          (safe[:300] or "(said nothing)"), flush=True)
+    if out.returncode != 0:
         return False
     # `am` exits 0 even when it refused, so read what it said.
-    return "Error" not in ((out.stdout or "") + (out.stderr or ""))
+    return "Error" not in said
 
 
 def usb_watch():
@@ -998,6 +1017,7 @@ class Handler(BaseHTTPRequestHandler):
         armed, opened = [], []
         for serial in ready:
             if not arm_reverse(serial):
+                print("  AM reverse: could not arm " + serial, flush=True)
                 continue
             armed.append(serial)
             if push_deep_link(serial, link):

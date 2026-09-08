@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.16.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.16.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.17.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.17.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,19 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.17.0
+- **`am start` now says why it refused.** Only its exit code and the absence of
+  "Error" were kept, so when the launch failed on a phone whose tunnel had come
+  up fine, the one thing that would have explained it was discarded. `rc=` and
+  `am`'s own words now go to `~/.filebridge/gui.log`, and a failure to arm the
+  reverse mapping is logged too.
+- **The key is redacted before that is written.** On success `am` echoes the
+  whole intent back, URI included, and that URI carries the access key —
+  logging it verbatim would put the key in `gui.log`, which is the first file
+  anyone is told to read when the app misbehaves. The redaction needs a
+  lookbehind: a bare `t=` also appears inside `act=` and `dat=`, and a naive
+  pattern blanked those too, throwing away the very thing being logged.
 
 ### 1.16.0
 - **The panel stops overwriting the reason pairing failed.** The button set the
@@ -203,6 +216,9 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.17.0
+- Ships server 1.17.0.
 
 ### 1.16.0
 - Ships server 1.16.0: the Cable card keeps the real pairing error, and can

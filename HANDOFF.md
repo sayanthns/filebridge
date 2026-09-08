@@ -10,8 +10,8 @@ Last updated: 2026-09-08.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.16.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
-| Mac app | 1.16.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Server (`filebridge.py`) | 1.17.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
+| Mac app | 1.17.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
 | Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -222,9 +222,10 @@ path.
   The command strings are right — the device-side shell quoting was checked by
   round-tripping a token containing a `'` through `sh -c` — but nothing has
   spoken to a phone
-- **Why `adb shell am start` refused.** Only its exit code and the absence of
-  "Error" in its output are checked; the real stderr was never captured,
-  because the panel threw the message away. Worth logging next time
+- **Why `adb shell am start` refused.** Still unknown, but no longer
+  unrecorded: server 1.17.0 logs `rc=` and `am`'s own words to `gui.log`
+  (with the key redacted), so the next attempt will say. Look for a line
+  starting `AM start:`
 - **The transport fallback on the phone** (`url_wifi` / `url_usb`).
   Compile-verified, and the new strings are confirmed inside the APK, but no
   cable has been unplugged mid-session to watch it swap
@@ -317,7 +318,7 @@ These cost hours. They are properties of the environment, not the code.
 | `~/Library/Services/*.workflow` | Copy / Move to Phone | Installed by the launcher. `make_quick_actions.py --uninstall` removes them |
 | `~/.filebridge/key` | access key | **Secret.** Persisted so pairing survives restarts. Delete to unpair every device |
 | `~/.filebridge/state.json` | taken flags, cached durations | Safe to delete |
-| `~/.filebridge/gui.log` | server + launcher output | First place to look when the app "does nothing" |
+| `~/.filebridge/gui.log` | server + launcher output | First place to look when the app "does nothing". Carries `AM start:` lines when cable pairing is attempted — with the access key redacted, deliberately, because `am` echoes the whole URI back |
 | `/tmp/filebridge_clients.txt` | last phone seen | 45 s freshness window. Reads back as two whitespace-separated fields, which is why a wired phone is recorded as `usb` and not a label with a space in it |
 
 ## Getting going

@@ -279,6 +279,14 @@ zxing fills the first dex, so app code sits in `classes3.dex`. Grepping only
 `classes.dex` for a new string returns zero and looks exactly like a build that
 did not pick up the change.
 
+**Logging a subprocess's output without reading what is in it.** `am start`
+echoes the intent it launched, URI and all — and that URI carries the access
+key. Capturing its output for diagnosis therefore writes the key into
+`~/.filebridge/gui.log`, the file every troubleshooting note points at first.
+Redact before printing, and mind the boundary: `t=` also occurs inside `act=`
+and `dat=`, so `t=[^&\s}]+` blanks the whole line and destroys the diagnostic
+it was added to capture. `(?<![A-Za-z0-9_])t=` is the pattern that works.
+
 **Setting a UI message and then re-rendering.** The panel's Pair button wrote
 the server's error into the hint and then called `poll()`, whose `render()`
 overwrote it with the button's own optimistic description. A real
