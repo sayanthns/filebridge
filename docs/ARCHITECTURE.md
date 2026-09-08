@@ -13,6 +13,40 @@ worth reading first — each one cost real debugging time.
 | `tools/qrgen.js` | JXA | QR PNG via macOS CoreImage — no dependency to install |
 | `android/` | Kotlin | Native phone app: browse, download, upload, scan |
 
+## Two transports
+
+The same API, reached two ways. Nothing above the socket knows which.
+
+| | Wifi | Cable |
+|---|---|---|
+| Listener | `0.0.0.0:8001` | `127.0.0.1:8002`, flagged `wired` |
+| Phone dials | `http://<lan-ip>:8001` | `http://127.0.0.1:8001` on the phone |
+| Carried by | the network | `adb reverse tcp:8001 tcp:8002` |
+| Needs | same wifi | USB debugging + one "Allow" tap |
+| A VPN can break it | **yes** | no — nothing is routed |
+| Radio can sleep | yes | no |
+
+```
+Mac                                                        Phone
+ filebridge.py                                        File Bridge app
+   ├── 0.0.0.0:8001   ──────── wifi ───────────────────▶  http://<lan-ip>:8001
+   └── 127.0.0.1:8002 ◀── adb reverse ──  127.0.0.1:8001 ◀── same app, same key
+```
+
+**The cable is not faster.** Measured on this machine: the phone negotiates USB
+2.0 High Speed (480 Mbit/s, `Device Speed = 2` in `ioreg -p IOUSB`) while wifi
+was an 802.11ax 80 MHz link at −55 dBm with a 600 Mbit/s transmit rate. Wired
+buys independence from the network, not throughput — and the two worst bugs in
+this project's history were both network-layer (a VPN eating `192.168.x.x`, and
+the radio sleeping with the screen).
+
+**Two listeners, not one, and that is the security model.** `adb reverse`
+delivers the phone's requests from `127.0.0.1`, so an address check cannot tell
+the phone from this Mac. Which socket it arrived on can. `Handler._local()`
+returns `False` for the wired one unconditionally, which is what keeps
+`/connect` and `/qr.png` — both of which print the access key — away from the
+phone. See the dead ends.
+
 ## HTTP API
 
 Two classes of route, and the split is the security model.
@@ -46,6 +80,12 @@ requiring it to view the page that reveals it is circular.
 | `/api/start` | POST | Resume sharing |
 | `/api/quit` | POST | Exit the process |
 | `/api/open` | POST | `{folder}` — reveal `to-phone`/`from-phone` in Finder |
+| `/api/usb` | POST | Arm `adb reverse` and open the app on the phone, connected |
+
+`/api/status` carries a `usb` object — `on`, `adb`, `port`, `link`, `devices`,
+`waiting`, `armed` — which the panel renders as the Cable card. It is read
+straight out of the module-level `USB` dict and **never shells out to adb**: the
+panel polls this every 2.5 s. `/api/usb` does shell out, because it is a button.
 
 While paused, phone requests get `503` with a readable message; the panel keeps
 working. That is why Stop pauses rather than exits — see the dead ends.
@@ -68,6 +108,24 @@ Mac                                        Phone
 Scanned text and deep-link intents both funnel into `connectFromPayload()`, so
 the two routes cannot drift apart. The link is saved, so later launches skip the
 scan entirely.
+
+Over the cable there is no QR at all — the Mac fires the *same* deep link at the
+phone itself:
+
+```
+Mac                                                    Phone
+ │  adb reverse tcp:8001 tcp:8002                        │
+ │──────────────────────────────────────────────────────▶ │  loopback now
+ │                                                        │  reaches the Mac
+ │  adb shell am start -a VIEW -d 'filebridge://c?u=…'    │
+ │──────────────────────────────────────────────────────▶ │  app opens, already
+ │                                                        │  connected
+ │◀───── GET /api/list?t=<key> on 127.0.0.1:8002 ─────────│  panel shows "usb"
+```
+
+The app keeps one saved link per transport (`url_wifi`, `url_usb`) and falls
+back to the other when the live one fails, so unplugging the cable does not
+strand it on a `127.0.0.1` that nothing answers.
 
 ## State on disk
 
@@ -126,6 +184,32 @@ explicit action plus a scheduled sweep.
 another user's process must read cannot be `0700`. Relevant if you add an
 X-Accel-style path later.
 
+**An address check for "is this the Mac?", once a cable existed.** `_local()`
+compared `client_address[0]` against `127.0.0.1`. That is correct with one
+listener and catastrophic with two: `adb reverse` hands the phone's requests to
+us *from* `127.0.0.1`. Measured with the guard removed — the phone side got
+`/connect` with the access key rendered in it, read the key again out of
+`/api/status`, and stopped the server with one `POST /api/quit`. Trust has to
+follow the socket. Bind the wired listener separately, flag it, and let
+`_local()` answer `False` for it.
+
+**Trusting `bind()` to fail on a taken port.** `allow_reuse_address` is set, and
+on macOS that lets a `127.0.0.1:8801` bind succeed *underneath* a live `*:8801`
+— confirmed here, no error raised. The narrower socket then takes every loopback
+connection, so the panel would have started getting `403` from the wired
+socket's own security gate: the feature silently eating the UI that configures
+it. `port_busy()` connects first and asks.
+
+**`adb shell am start -d <url>` unquoted.** adb joins the argv and hands it to a
+shell **on the device**, where the `&` before the key is "run in background".
+The app launches with the token cut off and refuses its own pairing link. Single
+quote the URL.
+
+**Assuming new Kotlin lands in `classes.dex`.** The app is multidex — bundled
+zxing fills the first dex, so app code sits in `classes3.dex`. Grepping only
+`classes.dex` for a new string returns zero and looks exactly like a build that
+did not pick up the change.
+
 **Preview for showing the QR.** An AppleScript `display dialog` stays frontmost
 and hid it. Anything modal will.
 
@@ -149,6 +233,35 @@ curl -s -r 0-1023 "http://<lan-ip>:8001/file?t=$KEY&path=to-phone/x" | wc -c   #
 
 # is path containment intact?
 curl -o /dev/null -w '%{http_code}\n' "http://<lan-ip>:8001/file?t=$KEY&path=../../etc/passwd"
+
+# --- the cable. 8002 is the wired listener; run these against it directly,
+# --- no phone needed, because it is just a loopback socket.
+
+# does the wired socket refuse the control surface? every one of these is 403,
+# and the key must appear zero times in that first body
+for r in /connect /qr.png /api/status; do
+  curl -o /dev/null -w "$r %{http_code}\n" "http://127.0.0.1:8002$r"
+done
+curl -s http://127.0.0.1:8002/connect | grep -c "$KEY"                        # 0
+for r in /api/quit /api/stop /api/open /api/usb; do
+  curl -X POST -o /dev/null -w "$r %{http_code}\n" "http://127.0.0.1:8002$r"
+done
+
+# is it still a phone transport? key required, key accepted
+curl -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8002/api/list"           # 403
+curl -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8002/api/list?t=$KEY"    # 200
+
+# and the wifi socket still trusts loopback
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/connect             # 200
+```
+
+To prove the guard is load-bearing rather than vacuous, delete these two lines
+from `_local()` and re-run the block above — the panel, the key and `/api/quit`
+all come back:
+
+```python
+        if self.server.wired:
+            return False
 ```
 
 Two habits that would have saved most of the debugging above:

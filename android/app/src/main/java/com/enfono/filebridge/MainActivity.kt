@@ -72,7 +72,8 @@ class MainActivity : AppCompatActivity() {
     private var currentTab = TAB_FILES
     private val ui = Handler(Looper.getMainLooper())
 
-    private var base = ""      // http://ip:port
+    private var base = ""      // http://ip:port, wifi or 127.0.0.1 over the cable
+    private var swapped = false // guards the transport fallback against a loop
     private var token = ""
     private var cwd = ""
     private var parent: String? = null
@@ -147,7 +148,7 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             connectError.visibility = View.GONE
-            prefs.edit().putString("url", raw).apply()
+            rememberLink()
             load("")
         }
 
@@ -441,9 +442,57 @@ class MainActivity : AppCompatActivity() {
         token = key
         val full = u + "/?t=" + key
         urlInput.setText(full)
-        prefs.edit().putString("url", full).apply()
-        toast("Connecting to " + u)
+        rememberLink()
+        toast(if (isCable(u)) "Connecting over the cable" else "Connecting to " + u)
         load("")
+        return true
+    }
+
+    /** Is `b` the cable? Over `adb reverse` the Mac is reached on our own
+     *  loopback, so the transport is visible in the host and nowhere else. */
+    private fun isCable(b: String) =
+        b.contains("://127.0.0.1") || b.contains("://localhost")
+
+    /** Save the link twice: once as the live one, once in its transport's slot.
+     *
+     *  Pairing over the cable used to overwrite the only saved link, so
+     *  unplugging left the app pointed at a 127.0.0.1 that nothing answers and
+     *  the Mac had to be scanned again. Keeping one per transport is what lets
+     *  the fallback below exist.
+     */
+    private fun rememberLink() {
+        val full = base + "/?t=" + token
+        prefs.edit()
+            .putString("url", full)
+            .putString(if (isCable(base)) "url_usb" else "url_wifi", full)
+            .apply()
+    }
+
+    /** The saved link for the other transport, or "" if there is not one. */
+    private fun otherLink(): String {
+        val saved = prefs.getString(if (isCable(base)) "url_wifi" else "url_usb", "")
+        return if (saved.isNullOrBlank()) "" else saved
+    }
+
+    /** Retry `path` on the other transport. False when there is nothing to try.
+     *
+     *  The cable was unplugged, or has been plugged in since the last
+     *  connection. Either way the other transport is one saved link away, so
+     *  try it before throwing the user back to the scanner. Cheap in the
+     *  common direction: with nothing behind `adb reverse`, 127.0.0.1 refuses
+     *  at once rather than burning the 8 s connect timeout.
+     */
+    private fun trySwapTransport(path: String): Boolean {
+        if (swapped) return false
+        val target = otherLink()
+        if (target.isEmpty()) return false
+        val wasBase = base
+        val wasToken = token
+        if (!parse(target)) { base = wasBase; token = wasToken; return false }
+        swapped = true
+        urlInput.setText(target)
+        status(if (isCable(base)) "Trying the cable…" else "Cable is gone - trying wifi…")
+        load(path)
         return true
     }
 
@@ -474,8 +523,8 @@ class MainActivity : AppCompatActivity() {
         if (target.isNotEmpty()) {
             io.execute { try { post(target, "") } catch (e: Exception) { } }
         }
-        prefs.edit().remove("url").apply()
-        base = ""; token = ""; cwd = ""; parent = null
+        prefs.edit().remove("url").remove("url_wifi").remove("url_usb").apply()
+        base = ""; token = ""; cwd = ""; parent = null; swapped = false
         rows.clear()
         (listView.adapter as Adapter).notifyDataSetChanged()
         browser.visibility = View.GONE
@@ -530,6 +579,10 @@ class MainActivity : AppCompatActivity() {
 
                 ui.post {
                     spinner.visibility = View.GONE
+                    // This transport works, so make it the one we start with
+                    // next time, and let the fallback fire again later.
+                    swapped = false
+                    rememberLink()
                     cwd = cwdNow
                     parent = parentNow
                     rows.clear()
@@ -556,7 +609,7 @@ class MainActivity : AppCompatActivity() {
                         // on the Mac, so throwing the user out would be rude.
                         status("Paused on the Mac")
                         toast("Sharing is paused on the Mac. Press Start sharing there.")
-                    } else {
+                    } else if (!trySwapTransport(path)) {
                         status("Not connected")
                         browser.visibility = View.GONE
                         connectBar.visibility = View.VISIBLE
@@ -565,7 +618,14 @@ class MainActivity : AppCompatActivity() {
                         // a full tunnel routes even 192.168.x.x out to the exit
                         // server, so the Mac on the same network is unreachable.
                         showConnectError(
-                            if (vpnActive())
+                            if (isCable(base))
+                                // Loopback, so wifi and any VPN are irrelevant
+                                // here and naming them would send the user off
+                                // to debug the wrong thing.
+                                "The cable is not carrying anything. Plug the " +
+                                "phone into the Mac, then press \"Pair over " +
+                                "cable\" in the File Bridge panel."
+                            else if (vpnActive())
                                 "Could not reach the Mac. A VPN is on, and it sends " +
                                 "even local addresses through the tunnel. Turn on " +
                                 "\"Allow LAN connections\" in the VPN app, or " +

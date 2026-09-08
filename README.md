@@ -1,8 +1,9 @@
 # File Bridge
 
-Move files between a Mac and an Android phone over your own wifi. No cloud, no
-account, no cable. A small Python server on the Mac, a native app on the phone,
-and a QR code to connect them.
+Move files between a Mac and an Android phone over your own wifi — or over the
+USB cable, when there is no wifi worth trusting. No cloud, no account. A small
+Python server on the Mac, a native app on the phone, and a QR code to connect
+them.
 
 <p align="center">
   <img src="docs/screenshots/mac-panel-sharing.png" width="330" alt="Mac panel showing a QR code to scan">
@@ -21,6 +22,10 @@ because it has done its job.
   (there is a **Move to Phone** too, when you do not want a second copy).
 - **Phone → Mac.** Pick files in the app, they land in `~/FileBridge/from-phone`.
 - **Connect by QR.** Scan in-app, or with the phone's camera (deep link).
+- **Or over the cable.** With USB debugging on, press **Pair over cable** in the
+  panel: `adb reverse` carries the phone's own loopback to the Mac, and the app
+  opens already connected — no QR, no typing, no wifi. Not faster than a good
+  5 GHz link, but nothing can route it wrong and no radio can sleep on it.
 - **Resumable downloads.** Range requests, so a dropped wifi link continues
   instead of restarting a 900 MB file.
 - **Remembers what you took**, per file, so a long list stays navigable.
@@ -32,7 +37,7 @@ because it has done its job.
 |---|---|
 | Mac | macOS 11+, Python 3.9+ (the system one is fine). `ffprobe` optional, for durations |
 | Phone | Android 7.0+ (API 24) |
-| Both | The same wifi network |
+| Both | The same wifi network — **or** a USB cable, USB debugging on the phone, and `adb` on the Mac |
 
 Nothing to `pip install`. The server is standard library only.
 
@@ -120,13 +125,22 @@ Worth understanding before you use it on a network you do not control.
 - **A key in the URL** (`?t=…`) gates every phone-facing route. Without it,
   every device on the wifi could read the shared folder.
 - **Local-only control.** `/connect`, `/qr.png`, `/api/status`, `/api/stop`,
-  `/api/start`, `/api/quit` and `/api/open` answer **only** to `127.0.0.1`.
-  They display the key or act on the Mac, so a phone must never reach them.
+  `/api/start`, `/api/quit`, `/api/open` and `/api/usb` answer **only** to this
+  Mac. They display the key or act on the machine, so a phone must never reach
+  them.
+- **"This Mac" means the socket, not the address.** Over the cable the phone
+  arrives from `127.0.0.1`, so the wired listener is a *separate* socket that is
+  never treated as local — it answers `403` to every route above. Getting this
+  wrong would hand the phone the panel, and the panel prints the key.
+- **USB debugging is a real permission.** Pairing over the cable needs it on,
+  and it lets any authorised computer do far more than move files. Turn it off
+  when you are done if you do not otherwise use it.
 - **Path containment.** Served paths are confined to the shared folder. `..` is
   rejected; symlinks you place inside it *are* followed, deliberately, so you
   can link a media folder in.
 - **Plain HTTP.** Traffic is unencrypted on your LAN. Fine at home; do not use
-  it on café or conference wifi.
+  it on café or conference wifi — use the cable there instead, which never puts
+  the key on the network at all.
 - **The key persists** in `~/.filebridge/key` so the phone stays paired across
   restarts. Delete that file to invalidate every paired device.
 
@@ -156,6 +170,10 @@ python3 filebridge.py ~/FileBridge --port 8001 --token devkey
 Then `http://127.0.0.1:8001/connect` for the panel, or
 `http://127.0.0.1:8001/?t=devkey` for the browse view.
 
+The wired listener comes up alongside it on `127.0.0.1:8002` and can be driven
+with `curl` without any phone attached — it should answer `403` to `/connect`
+and `200` to `/api/list?t=devkey`. `--no-wired` skips it, and never starts adb.
+
 **Three independent versions** — server, Mac app, Android app — because they
 talk over a stable HTTP API and rarely need to move together. Bump only what
 changed, and always bump Android's `versionCode` or the APK will not install
@@ -168,7 +186,11 @@ is measured from what is only believed to work, and lists this machine's quirks
 ## Known limits
 
 - **Android only.** No iOS app; iPhones can use the web view instead.
-- **Same network required.** No relay, no internet fallback.
+- **Same network required**, unless you use the cable. No relay, no internet
+  fallback either way.
+- **The cable is not a speed upgrade.** On the hardware here it negotiates USB
+  2.0 High Speed (480 Mbit/s) against wifi already running at 600 Mbit/s. It is
+  for reliability — no VPN in the way, no radio to sleep — not throughput.
 - **The APK is debug-signed.** It installs and upgrades fine, but Play Store
   distribution would need a release keystore.
 - **No Dock tile of its own.** The Mac app is a launcher that exits, so the

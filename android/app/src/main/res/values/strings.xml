@@ -2,7 +2,7 @@
     <string name="app_name">File Bridge</string>
 
     <!-- connect -->
-    <string name="connect_tagline">Move files between your Mac and this phone over wifi</string>
+    <string name="connect_tagline">Move files between your Mac and this phone, over wifi or a USB cable</string>
     <string name="scan_qr">Scan QR from Mac</string>
     <string name="scan_help">Open File Bridge on the Mac and press Start sharing</string>
     <string name="paste_link">Or paste the link</string>

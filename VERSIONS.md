@@ -5,9 +5,9 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.12.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.12.0** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.11.1** (code 14) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Server | **1.13.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.13.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Android app | **1.12.0** (code 15) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -16,6 +16,38 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.13.0
+- **A wired transport, over the USB cable.** The phone dials its own
+  `127.0.0.1:8001`, which `adb reverse` maps to a second listener of ours bound
+  to loopback on 8002. No wifi is involved at any point, which removes the two
+  failure classes that have cost the most time here: a full-tunnel VPN cannot
+  swallow loopback, and there is no radio to fall asleep. It is **not faster** —
+  the cable on this Mac negotiates USB 2.0 High Speed (480 Mbit/s) against an
+  802.11ax link already running at 600 Mbit/s. Reliability is the whole point.
+- **`_local()` now follows the socket, not the address.** This is the part to
+  understand before touching any of it. `adb reverse` delivers the phone's
+  requests from `127.0.0.1`, so the old address check would have handed the
+  phone `/connect` and `/qr.png` — **both of which print the access key** — plus
+  `/api/quit` and `/api/stop`. Measured, with the guard removed: the cable got
+  the panel with the key in it, read the key again out of `/api/status`, and
+  killed the server with one POST. The wired listener answers `403` to all of
+  them and the key appears zero times.
+- **"Pair over cable" needs no QR and no typing.** `POST /api/usb` (localhost
+  only) arms the reverse mapping and then fires the *same* deep link the QR
+  encodes straight at the phone with `adb shell am start`, so the app comes up
+  already connected. The URL is single-quoted on the way through: adb hands the
+  command to a shell **on the device**, where the unquoted `&` before the key
+  would have been read as "run in background" and truncated the token off.
+- **The wired bind is probed, not attempted.** `allow_reuse_address` means a
+  `127.0.0.1:8801` bind succeeds *underneath* a live `*:8801` — measured here —
+  and the narrower socket then quietly takes every loopback connection,
+  including the panel's, which would start getting 403 from the wired socket's
+  own gate. `port_busy()` asks first, and `--wired-port` equal to `--port` is
+  refused outright.
+- Pause covers the cable too, because it runs through the same `_local()`. A
+  wired phone shows in the panel as `usb` rather than an address that says
+  nothing. `--no-wired` skips the whole thing, including ever starting adb.
 
 ### 1.12.0
 - **Records the served folder** in `~/.filebridge/root`. The folder is a
@@ -101,6 +133,12 @@ over the previous one**, so bump it on every APK you hand to the phone.
 
 ## Mac app
 
+### 1.13.0
+- Ships server 1.13.0, so the panel gains the Cable card and "Pair over cable".
+  Nothing in the launcher changed: the server binds the wired port and keeps the
+  reverse mapping armed itself, because it is the process that outlives the
+  launcher.
+
 ### 1.12.0
 - **Finder right-click: Copy to Phone / Move to Phone.** Two Quick Actions ship
   inside the bundle and are installed to `~/Library/Services` on launch, then
@@ -142,6 +180,21 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Android app
+
+### 1.12.0 (versionCode 15)
+- **One saved link per transport, and a fallback between them.** Pairing over
+  the cable overwrote the only saved link, so unplugging left the app pointed at
+  a `127.0.0.1` that nothing answers and the Mac had to be scanned again. It now
+  keeps `url_wifi` and `url_usb` separately and, when the live one fails, tries
+  the other once before throwing the user back to the scanner. Cheap in the
+  common direction: with nothing behind `adb reverse`, loopback refuses
+  immediately instead of burning the 8 s connect timeout.
+- **A VPN is no longer blamed for the cable.** The VPN warning is right about
+  wifi and meaningless about loopback, where no VPN can reach — naming it would
+  send someone off to debug the wrong thing. Over the cable the message asks for
+  the cable and the panel's Pair button instead.
+- Nothing was needed for pairing itself: the Mac fires a `filebridge://` deep
+  link over adb, and that already funnels into `connectFromPayload()`.
 
 ### 1.11.1 (versionCode 14)
 - **A VPN is named as the cause when one is on.** "Could not reach the Mac" listed

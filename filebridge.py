@@ -48,12 +48,27 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
 # The Mac window polls this to know a device connected and hide the QR.
 CLIENTS_FILE = "/tmp/filebridge_clients.txt"
+
+# Wired transport. The phone dials its OWN loopback, which `adb reverse` maps
+# to a second listener of ours bound to 127.0.0.1. Nothing crosses the network,
+# so a full-tunnel VPN on the phone cannot swallow it and no wifi is needed at
+# all. Filled in by main(); read by /api/status, which must stay cheap and so
+# never shells out to adb itself.
+USB = {
+    "on": False,        # is the wired listener up
+    "adb": "",          # path to adb, "" when we could not find one
+    "phone_port": 0,    # port on the phone that adb reverse listens on
+    "host_port": 0,     # our loopback listener behind it
+    "devices": [],      # serials in the "device" state, ready to use
+    "waiting": [],      # [serial, state] for unauthorized / offline ones
+    "armed": [],        # serials whose reverse mapping we last set successfully
+}
 
 # Stop Sharing pauses instead of exiting. Killing the process meant the panel
 # it was serving went dead too, leaving no way to start again without quitting
@@ -165,6 +180,127 @@ def lan_ip():
         sock.close()
 
 
+# ---------------------------------------------------------------- adb / wired
+
+# Not on PATH on a normal Mac even when the SDK is installed, which is how an
+# earlier session concluded there was no way to reach a phone from here.
+ADB_PLACES = (
+    os.path.expanduser("~/Library/Android/sdk/platform-tools/adb"),
+    "/opt/homebrew/bin/adb",
+    "/usr/local/bin/adb",
+    os.path.expanduser("~/Android/Sdk/platform-tools/adb"),
+)
+
+
+def find_adb():
+    for path in ADB_PLACES:
+        if os.access(path, os.X_OK):
+            return path
+    return shutil.which("adb") or ""
+
+
+def adb(args, timeout=12):
+    """Run adb, or return None. Never raises: a missing cable is normal."""
+    if not USB["adb"]:
+        return None
+    try:
+        return subprocess.run([USB["adb"]] + list(args), capture_output=True,
+                              text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+def adb_devices():
+    """(ready, waiting). `waiting` is the interesting half: a phone whose owner
+    has not tapped Allow yet shows up as `unauthorized`, and saying so beats
+    reporting no phone at all."""
+    out = adb(["devices"])
+    if not out or out.returncode != 0:
+        return [], []
+    ready, waiting = [], []
+    for line in (out.stdout or "").splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2 or parts[0] == "*":
+            continue
+        serial, state = parts[0], parts[1]
+        if state == "device":
+            ready.append(serial)
+        else:
+            waiting.append([serial, state])
+    return ready, waiting
+
+
+def arm_reverse(serial):
+    """Point the phone's loopback port at our wired listener."""
+    out = adb(["-s", serial, "reverse",
+               "tcp:" + str(USB["phone_port"]), "tcp:" + str(USB["host_port"])])
+    return bool(out and out.returncode == 0)
+
+
+def port_busy(port):
+    """Is anyone already answering on this loopback port?
+
+    bind() is not a reliable answer. allow_reuse_address (SO_REUSEADDR) lets a
+    127.0.0.1 bind succeed *underneath* an existing 0.0.0.0 bind on the same
+    port, and the narrower socket then quietly takes every loopback connection
+    — including the panel's, which would start getting 403 from the wired
+    socket's own security gate. Measured on this machine: a second instance
+    bound 127.0.0.1:8801 under a live *:8801 without an error. So ask.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.4)
+    try:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        sock.close()
+
+
+def usb_base():
+    return "http://127.0.0.1:" + str(USB["phone_port"])
+
+
+def usb_deep_link(token):
+    return ("filebridge://c?u=" + urllib.parse.quote(usb_base(), safe="") +
+            "&t=" + token)
+
+
+def push_deep_link(serial, link):
+    """Open the app on the phone already connected, over the cable.
+
+    This is why wired pairing needs no QR and no typing. The URL is single
+    quoted because adb hands the whole command to a shell ON THE DEVICE, and
+    the unquoted `&` before the key would be read there as "run in background"
+    — the app would launch with a truncated link and no token.
+    """
+    quoted = "'" + link.replace("'", "'\\''") + "'"
+    out = adb(["-s", serial, "shell", "am", "start",
+               "-a", "android.intent.action.VIEW", "-d", quoted], timeout=20)
+    if not out or out.returncode != 0:
+        return False
+    # `am` exits 0 even when it refused, so read what it said.
+    return "Error" not in ((out.stdout or "") + (out.stderr or ""))
+
+
+def usb_watch():
+    """Keep the reverse mapping armed.
+
+    It is not a one-shot: a reverse mapping belongs to one device connection
+    and dies on every unplug, and again whenever the adb server restarts. So
+    this re-arms every tick for any ready device rather than trusting a cached
+    "already armed" flag — an adb server restart leaves the serial looking
+    unchanged while the mapping underneath is gone.
+
+    Costs one `adb devices` per tick with nothing plugged in, two with a phone
+    attached, both ~10 ms against a running daemon. The first tick starts the
+    adb server if it is not already up; --no-wired is how you avoid that.
+    """
+    while True:
+        ready, waiting = adb_devices()
+        USB["devices"], USB["waiting"] = ready, waiting
+        USB["armed"] = [s for s in ready if arm_reverse(s)]
+        time.sleep(5)
+
+
 # ---------------------------------------------------------------- server
 
 
@@ -172,9 +308,12 @@ class Bridge(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, addr, handler, root, token):
+    def __init__(self, addr, handler, root, token, wired=False):
         self.root = os.path.realpath(root)
         self.token = token
+        # True for the loopback socket that sits behind `adb reverse`. Its
+        # callers are phones, not this machine — see Handler._local().
+        self.wired = wired
         self.pool = ThreadPoolExecutor(max_workers=6)
         super().__init__(addr, handler)
 
@@ -187,6 +326,17 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write("  " + (fmt % args)[:110] + "\n")
 
     def _local(self):
+        """Is the caller this Mac, and so allowed the control surface?
+
+        Trust follows the SOCKET, not the address. The wired listener is
+        reached only through `adb reverse`, so a phone's requests arrive on it
+        from 127.0.0.1 and would otherwise pass this gate — handing the phone
+        /connect and /qr.png, which both print the access key, plus
+        /api/quit. Answering False here is what keeps the cable a phone
+        transport rather than a hole in the local-only routes.
+        """
+        if self.server.wired:
+            return False
         return self.client_address[0] in ("127.0.0.1", "::1")
 
     def _paused_out(self):
@@ -247,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
         # /connect and /qr.png show the key, so they are localhost-only and
         # deliberately do NOT require it — you are already at the machine.
         if route == "/api/status":
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            if not self._local():
                 return self._json({"error": "localhost only"}, HTTPStatus.FORBIDDEN)
             client, seen = "", 0
             try:
@@ -273,10 +423,19 @@ class Handler(BaseHTTPRequestHandler):
                 "client": client, "seen": seen,
                 "root": self.server.root,
                 "to_phone": count(out_dir), "from_phone": count(in_dir),
+                "usb": {
+                    "on": USB["on"],
+                    "adb": bool(USB["adb"]),
+                    "port": USB["phone_port"],
+                    "link": usb_base() + "/?t=" + self.server.token,
+                    "devices": USB["devices"],
+                    "waiting": USB["waiting"],
+                    "armed": USB["armed"],
+                },
             })
 
         if route in ("/connect", "/qr.png"):
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            if not self._local():
                 return self._json({"error": "localhost only"}, HTTPStatus.FORBIDDEN)
             return self._connect_page() if route == "/connect" else self._qr_png()
 
@@ -303,10 +462,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
 
-        if parsed.path in ("/api/stop", "/api/start", "/api/quit", "/api/open"):
+        if parsed.path in ("/api/stop", "/api/start", "/api/quit", "/api/open",
+                           "/api/usb"):
             # Local control surface for the Mac panel. Localhost only: these
             # act on this machine, so no phone may ever reach them.
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            if not self._local():
                 return self._json({"error": "localhost only"}, HTTPStatus.FORBIDDEN)
             if parsed.path == "/api/start":
                 PAUSED["on"] = False
@@ -315,6 +475,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/quit":
                 threading.Timer(0.4, lambda: os._exit(0)).start()
                 return self._json({"quitting": True})
+
+            if parsed.path == "/api/usb":
+                return self._pair_usb()
 
             if parsed.path == "/api/stop":
                 PAUSED["on"] = True
@@ -367,9 +530,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _note_client(self):
         """Record a real device connecting, for the Mac window to react to."""
-        ip = self.client_address[0]
-        if ip in ("127.0.0.1", "::1"):
+        if self._local():
             return
+        # A wired phone reaches us over loopback, so its address says nothing
+        # about it. Label it instead — one word, because the panel reads this
+        # file back as two whitespace-separated fields.
+        ip = "usb" if self.server.wired else self.client_address[0]
         try:
             with open(CLIENTS_FILE, "w") as handle:
                 handle.write(ip + " " + str(int(time.time())))
@@ -700,6 +866,51 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- connect page (localhost only)
 
+    def _pair_usb(self):
+        """Arm the reverse mapping, then open the app on the phone connected.
+
+        Pairing over the cable needs no QR and no typing, because adb can fire
+        the same deep link the QR encodes straight at the phone. This one does
+        shell out to adb — it is a button press, not a poll.
+        """
+        if not USB["on"]:
+            return self._json({"error": "Wired sharing is off (--no-wired)."},
+                              HTTPStatus.CONFLICT)
+        if not USB["adb"]:
+            return self._json({"error": "No adb on this Mac. Install Android "
+                                        "platform-tools."}, HTTPStatus.CONFLICT)
+
+        ready, waiting = adb_devices()
+        USB["devices"], USB["waiting"] = ready, waiting
+        if not ready:
+            if any(state == "unauthorized" for _, state in waiting):
+                return self._json({"error": "Tap Allow on the phone to trust "
+                                            "this Mac, then press this again."},
+                                  HTTPStatus.CONFLICT)
+            return self._json({"error": "No phone on the cable. Plug it in and "
+                                        "turn on USB debugging in Developer "
+                                        "options."}, HTTPStatus.CONFLICT)
+
+        link = usb_deep_link(self.server.token)
+        armed, opened = [], []
+        for serial in ready:
+            if not arm_reverse(serial):
+                continue
+            armed.append(serial)
+            if push_deep_link(serial, link):
+                opened.append(serial)
+        USB["armed"] = armed
+
+        if not armed:
+            return self._json({"error": "adb could not set up the tunnel. "
+                                        "Replug the cable and try again."},
+                              HTTPStatus.BAD_GATEWAY)
+        if not opened:
+            return self._json({"error": "Tunnel is up but the app would not "
+                                        "open. Is File Bridge installed on the "
+                                        "phone?"}, HTTPStatus.BAD_GATEWAY)
+        return self._json({"paired": opened})
+
     def _deep_link(self):
         base = "http://" + lan_ip() + ":" + str(self.server.server_address[1])
         return ("filebridge://c?u=" + urllib.parse.quote(base, safe="") +
@@ -838,7 +1049,7 @@ button:disabled{opacity:.45;cursor:default}
 </style></head><body>
 <div class="wrap">
   <h1>File Bridge</h1>
-  <div class="sub">Move files between this Mac and your phone over wifi</div>
+  <div class="sub">Move files between this Mac and your phone, over wifi or the cable</div>
 
   <div class="card">
     <div class="statusrow">
@@ -859,6 +1070,18 @@ button:disabled{opacity:.45;cursor:default}
     <button class="folder" id="openFrom"><b>From Phone</b><span id="fromCount">-</span></button>
   </div>
 
+  <div class="card" id="usbcard" style="display:none">
+    <div class="statusrow">
+      <span class="dot" id="usbdot"></span>
+      <span class="state">Cable</span>
+    </div>
+    <div class="link" id="usbstate">-</div>
+    <div class="actions">
+      <button class="primary" id="usbpair">Pair over cable</button>
+    </div>
+    <div class="hint" id="usbhint"></div>
+  </div>
+
   <div class="card" id="qrcard"></div>
 
   <div class="ver">version __VER__</div>
@@ -867,7 +1090,7 @@ button:disabled{opacity:.45;cursor:default}
 <script>
 const $ = id => document.getElementById(id);
 let link = "__LINK__";
-let sharing = true, client = "", shownQr = false, dead = false;
+let sharing = true, client = "", shownQr = false, dead = false, usb = null;
 
 function el(tag, cls, text){
   const n = document.createElement(tag);
@@ -876,12 +1099,45 @@ function el(tag, cls, text){
   return n;
 }
 
+function renderUsb(){
+  const card = $("usbcard");
+  if(!usb || !usb.on){ card.style.display = "none"; return; }
+  card.style.display = "";
+  const ready = (usb.devices || []).length > 0;
+  const unauth = (usb.waiting || []).some(w => w[1] === "unauthorized");
+  const live = client === "usb";
+  let state, hint, offer = ready;
+  if(!usb.adb){
+    state = "No adb on this Mac";
+    hint = "The cable needs Android platform-tools. Wifi is unaffected.";
+    offer = false;
+  }else if(live){
+    state = usb.link;
+    hint = "Connected over the cable. Nothing is crossing the network.";
+  }else if(unauth){
+    state = "Waiting for the phone to trust this Mac";
+    hint = "Tap Allow on the phone, then press Pair over cable.";
+    offer = true;
+  }else if(!ready){
+    state = "No phone on the cable";
+    hint = "Plug it in, then turn on USB debugging in Developer options.";
+  }else{
+    state = usb.link;
+    hint = "Opens the app on the phone already connected - no QR, no typing.";
+  }
+  $("usbdot").classList.toggle("on", live || (usb.armed || []).length > 0);
+  $("usbstate").textContent = state;
+  $("usbhint").textContent = hint;
+  $("usbpair").style.display = offer ? "" : "none";
+}
+
 function render(){
   if(dead){
     $("dot").classList.remove("on");
     $("state").textContent = "Not running";
     $("link").textContent = "File Bridge has quit";
     ["start","stop","copy","quit"].forEach(id => $(id).style.display = "none");
+    $("usbcard").style.display = "none";
     $("qrcard").replaceChildren(
       el("div", "qrtitle", "Sharing ended"),
       el("div", "hint", "Open File Bridge from the Dock or Launchpad and this " +
@@ -889,6 +1145,7 @@ function render(){
     );
     return;
   }
+  renderUsb();
   $("dot").classList.toggle("on", sharing);
   $("state").textContent = sharing ? (client ? "Sharing - phone connected" : "Sharing")
                                    : "Paused";
@@ -910,7 +1167,7 @@ function render(){
     shownQr = false;
     const box = el("div", "connected");
     box.append(el("span", "badge", "Phone connected"),
-               el("div", "ip", client),
+               el("div", "ip", client === "usb" ? "over the cable" : client),
                el("div", "hint", "Browse and transfer from the phone app."));
     card.replaceChildren(box);
     return;
@@ -936,7 +1193,7 @@ async function poll(){
     const s = await r.json();
     if(s.error) return;
     if(dead){ dead = false; shownQr = false; }   // server is back
-    link = s.link; sharing = s.sharing; client = s.client || "";
+    link = s.link; sharing = s.sharing; client = s.client || ""; usb = s.usb || null;
     $("toCount").textContent = s.to_phone + (s.to_phone === 1 ? " file" : " files");
     $("fromCount").textContent = s.from_phone + (s.from_phone === 1 ? " file" : " files");
     render();
@@ -953,6 +1210,16 @@ $("copy").onclick = async () => {
   await navigator.clipboard.writeText(link);
   $("copy").textContent = "Copied";
   setTimeout(() => $("copy").textContent = "Copy link", 1400);
+};
+$("usbpair").onclick = async () => {
+  const b = $("usbpair");
+  b.disabled = true; b.textContent = "Pairing...";
+  try{
+    const s = await (await fetch("/api/usb", {method:"POST"})).json();
+    if(s.error) $("usbhint").textContent = s.error;
+  }catch(e){ $("usbhint").textContent = "Pairing failed - see ~/.filebridge/gui.log"; }
+  b.disabled = false; b.textContent = "Pair over cable";
+  poll();
 };
 $("stop").onclick  = async () => { await call("/api/stop");  poll(); };
 $("start").onclick = async () => { await call("/api/start"); poll(); };
@@ -1202,6 +1469,13 @@ def main():
                         help="folder to serve (default ~/FileBridge)")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--token", default=None, help="reuse a key instead of generating one")
+    parser.add_argument("--wired-port", type=int, default=0,
+                        help="loopback port behind adb reverse (default: --port + 1)")
+    parser.add_argument("--phone-port", type=int, default=0,
+                        help="port the phone dials on its own loopback "
+                             "(default: same as --port)")
+    parser.add_argument("--no-wired", action="store_true",
+                        help="skip the cable entirely, and never start adb")
     args = parser.parse_args()
 
     root = os.path.abspath(os.path.expanduser(args.root))
@@ -1231,7 +1505,37 @@ def main():
         server = Bridge(("0.0.0.0", args.port), Handler, root, token)
     except OSError as error:
         sys.exit("cannot bind port " + str(args.port) + ": " + str(error) +
-                 "\nSomething else is using it - try --port 8002")
+                 "\nSomething else is using it - try --port 8010")
+
+    # ---- the cable
+    #
+    # A SECOND listener, bound to loopback and flagged wired. It has to be a
+    # separate socket rather than the same one: `adb reverse` delivers the
+    # phone's requests from 127.0.0.1, and the only thing that can then tell a
+    # phone from this Mac is which socket it arrived on. See Handler._local().
+    wired = None
+    if not args.no_wired:
+        USB["adb"] = find_adb()
+        USB["phone_port"] = args.phone_port or args.port
+        USB["host_port"] = args.wired_port or (args.port + 1)
+        why = ""
+        if USB["host_port"] == args.port:
+            why = "--wired-port must differ from --port"
+        elif port_busy(USB["host_port"]):
+            why = "something already answers on " + str(USB["host_port"])
+        if why:
+            print("  cable off:", why)
+        else:
+            try:
+                wired = Bridge(("127.0.0.1", USB["host_port"]), Handler, root,
+                               token, wired=True)
+            except OSError as error:
+                print("  cable off: cannot bind", USB["host_port"], "-", error)
+            else:
+                USB["on"] = True
+                threading.Thread(target=wired.serve_forever, daemon=True).start()
+                if USB["adb"]:
+                    threading.Thread(target=usb_watch, daemon=True).start()
 
     url = "http://" + lan_ip() + ":" + str(args.port) + "/?t=" + token
     print("")
@@ -1243,6 +1547,17 @@ def main():
     print("  " + url)
     print("")
     print("  Same Wi-Fi required. The key keeps other devices on the network out.")
+    if USB["on"]:
+        print("")
+        print("  OR OVER THE CABLE (no wifi, and a VPN cannot swallow it):")
+        print("  " + usb_base() + "/?t=" + token)
+        if USB["adb"]:
+            print("  Press \"Pair over cable\" in the panel, or by hand:")
+            print("  " + USB["adb"] + " reverse tcp:" + str(USB["phone_port"]) +
+                  " tcp:" + str(USB["host_port"]))
+        else:
+            print("  No adb found, so nothing is tunnelling yet. Install")
+            print("  Android platform-tools, or run with --no-wired.")
     print("  Ctrl-C to stop.")
     print("")
     # Under nohup / a pipe, stdout is block-buffered and the URL above would

@@ -4,15 +4,15 @@ For whoever picks this up next. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md
 alongside this — it holds the HTTP API and the dead ends. This file is state and
 honesty: what works, what is merely *believed* to work, and what is left.
 
-Last updated: 2026-08-11.
+Last updated: 2026-09-08.
 
 ## Where things stand
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.12.0 | Working. Browse, download (Range + ETag), upload, pause/resume |
-| Mac app | 1.12.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
-| Android app | 1.11.1 (code 14) | Working. Both directions confirmed on the phone, screen off |
+| Server (`filebridge.py`) | 1.13.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener |
+| Mac app | 1.13.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Android app | 1.12.0 (code 15) | Working over wifi, both directions, screen off. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
 the other:
@@ -33,6 +33,30 @@ Both landed and a large file now completes on the phone with the screen off.
 The shape of a healthy transfer in `~/.filebridge/gui.log` is several `TRANSFER`
 lines for one file, the later ones carrying `range=bytes=N-`, ending in
 `complete`. A single `range=none` line with no follow-up is the old failure.
+
+**The cable works, but has never met a phone.** 1.13.0 adds a second listener
+bound to `127.0.0.1:8002` and flagged `wired`; `adb reverse tcp:8001 tcp:8002`
+is what carries the phone's `127.0.0.1:8001` to it. Everything on the Mac side
+is measured — see below — because a loopback socket can be driven with `curl`
+and needs no device. **What is not measured is the two adb calls**: arming the
+reverse mapping against a real phone, and `adb shell am start` opening the app.
+USB debugging is off on the Honor here, so `adb devices` is empty and neither
+has ever run against hardware. Turning it on is the whole remaining test.
+
+The security consequence of the cable is the part to read twice. `_local()` used
+to compare `client_address[0]` against `127.0.0.1`, which is right with one
+listener and wrong with two, because `adb reverse` delivers the phone's requests
+*from* `127.0.0.1`. With the guard removed, the cable socket served `/connect`
+with the access key rendered into the page, handed the key over again in
+`/api/status`, and killed the server with one `POST /api/quit`. That is measured
+too, deliberately, so nobody "simplifies" the guard away later.
+
+**The cable is not faster, and saying otherwise will disappoint someone.** The
+phone negotiates USB 2.0 High Speed here — 480 Mbit/s, `Device Speed = 2` from
+`ioreg -p IOUSB -l` — against wifi that was already an 802.11ax 80 MHz link at
+−55 dBm with a 600 Mbit/s transmit rate. Either the C-to-C cable or the Honor's
+port is USB 2.0 only. What the cable actually buys: no wifi needed at all, no
+VPN can swallow loopback, and there is no radio to fall asleep.
 
 **A VPN on the phone breaks everything, and looks like the wrong wifi.** A
 full-tunnel VPN (Proton, in the case that cost a session) routes `192.168.x.x`
@@ -76,6 +100,33 @@ path.
   large send finishing with the screen off. Confirmed by use, not by curl
 - **Tapping a finished download opens it** in a player rather than reopening the
   app. Confirmed by use
+- **The wired listener refuses the control surface**: `403` from
+  `127.0.0.1:8002` for `/connect`, `/qr.png`, `/api/status`, `/api/quit`,
+  `/api/stop`, `/api/open` and `/api/usb`, and the access key appears **zero**
+  times in the `/connect` body. `200` for `/api/list?t=<key>`, `403` without the
+  key and with a wrong one — so it is a phone transport, not a hole
+- **That guard is load-bearing, not decorative.** With the two lines deleted the
+  same socket returned `200` for `/connect` **with the key in the page**, `200`
+  for `/api/status` **with the key in the JSON**, and `200` for `/api/quit`
+  after which the server was gone
+- **The cable carries the real API**: `206` with exact byte counts for `0-1023`
+  and `5000-5099`, `ETag` + `Last-Modified` + `Content-Range` present, a whole
+  file sha1-identical to the source, an upload sha1-identical round trip, and
+  `../../etc/passwd` refused in both plain and URL-encoded form
+- **Pause covers the cable**, because it runs through the same `_local()`: `503`
+  on the wired socket while the panel still answers `200`, and `200` again after
+  Start
+- **The wired bind refuses to shadow anything**: `--wired-port` equal to
+  `--port` is refused, and a port something already answers on is refused — with
+  the wifi listener still coming up in both cases. Worth knowing *why*:
+  `allow_reuse_address` let a `127.0.0.1:8801` bind succeed under a live `*:8801`
+  with no error at all
+- **The panel's Cable card in all five states** (no adb / unauthorized / ready /
+  connected / wired off), driven through the page's own `renderUsb()` in a real
+  browser, plus a screenshot of the rendered card and a clean console
+- **APK 1.12.0**: `versionCode 15`, `filebridge` scheme filter intact, valid
+  debug signature, and the new code present — in `classes3.dex`, because the app
+  is multidex and zxing fills the first one
 - **Finder Quick Actions**: both workflows run via `automator -i` against a
   throwaway root — copy leaves the original, move does not, a name collision
   becomes `name-2.ext` rather than an overwrite, and a file already inside the
@@ -83,6 +134,16 @@ path.
   folder
 
 **Not verified — treat as unknown:**
+- **`adb reverse` and `adb shell am start` against a real device.** The two
+  calls the cable rests on. USB debugging is off on the phone here, so
+  `adb devices` is empty and the whole adb half is reasoned from the code plus
+  the fact that `adb reverse` with no device fails in 13 ms rather than hanging.
+  The command strings are right — the device-side shell quoting was checked by
+  round-tripping a token containing a `'` through `sh -c` — but nothing has
+  spoken to a phone
+- **The transport fallback on the phone** (`url_wifi` / `url_usb`).
+  Compile-verified, and the new strings are confirmed inside the APK, but no
+  cable has been unplugged mid-session to watch it swap
 - **Phone-side visuals.** No Android device has ever been attached to this Mac
   for a build; layouts, the scanner UI and the back-button behaviour are
   compile-verified only. Downloading is the exception — that one is confirmed by
@@ -97,25 +158,38 @@ path.
 
 ## Open items
 
-1. **Uploads cannot resume.** The server has one multipart `POST /api/upload`
+1. **Turn on USB debugging and run the cable once.** Everything else about it
+   is measured; this is the one gap, and it is a toggle plus a tap. Developer
+   options → USB debugging, then "Allow" when the Mac's key prompt appears, then
+   "Pair over cable" in the panel. Expect the app to open already connected and
+   the panel to show `usb`. `adb reverse --list` should print
+   `tcp:8001 tcp:8002`.
+2. **Uploads cannot resume.** The server has one multipart `POST /api/upload`
    with no offset, so an interrupted send starts over. An endpoint taking a byte
    offset and appending to a temp file would close the last asymmetry between the
    two directions — downloads already resume.
-2. **No tests.** Everything above was `curl` by hand. The commands are listed at
+3. **No tests.** Everything above was `curl` by hand. The commands are listed at
    the end of ARCHITECTURE.md and would convert directly into a shell test
    script — that is the highest-value next task.
-3. **Debug-signed APK.** Installs and upgrades fine, but is not distributable.
+4. **Debug-signed APK.** Installs and upgrades fine, but is not distributable.
    Needs a release keystore, which is a credential the owner must create.
-4. **No iOS app.** iPhones can use the browse view at `/?t=<key>` instead.
-5. **The Mac app has no Dock tile of its own** while running. It is a launcher
+5. **No iOS app.** The cable does not help here either — `adb` is Android
+   only. iPhones can use the browse view at `/?t=<key>` instead.
+6. **The Mac app has no Dock tile of its own** while running. It is a launcher
    that exits by design (see ARCHITECTURE.md — keeping it alive is what caused
    the Force Quit bug). The panel window belongs to Chrome. A real tile needs a
    GUI process, and Tk cannot provide one on this machine.
-6. **Chrome reuses its `--app` window** for the same URL, and remembers its last
+7. **Chrome reuses its `--app` window** for the same URL, and remembers its last
    size — including full screen. If the panel comes up full screen, that is
    Chrome's memory, not the launcher, which asks for 560×880.
-7. **Plain HTTP.** Fine on a home LAN, wrong for shared wifi. TLS would mean a
-   self-signed cert and a trust prompt on the phone.
+8. **Plain HTTP.** Fine on a home LAN, wrong for shared wifi. TLS would mean a
+   self-signed cert and a trust prompt on the phone — or use the cable on
+   shared wifi, which never puts the key on the network at all.
+9. **The adb watchdog spawns `adb devices` every 5 s** for as long as the server
+   runs, and its first tick starts the adb server if it is not already up. Both
+   are deliberate — a reverse mapping dies on every unplug, so re-arming has to
+   be a loop — but a watcher that only wakes on device attach would be cheaper.
+   `--no-wired` turns the whole thing off.
 
 ## This machine's quirks
 
@@ -126,9 +200,10 @@ These cost hours. They are properties of the environment, not the code.
 | `swiftc` | Broken: *redefinition of module 'SwiftBridging'* from a bad CommandLineTools module map. No native Swift UI possible here |
 | Tkinter | Only Apple's system **Tk 8.5.9**, which draws blank windows on modern macOS. Widgets build, nothing renders |
 | `~/Documents` | TCC-protected. A Finder-launched app reading code there gets `Operation not permitted`. Terminal *does* have access, which hides the bug |
-| Gradle | Not on `PATH`. `scripts/build-android.sh` finds a cached distribution under `~/.gradle/wrapper/dists` |
+| Gradle | Not on `PATH`. `scripts/build-android.sh` finds a cached distribution under `~/.gradle/wrapper/dists`. **It must be a 8.x one** — a cached 9.7.1 appeared and newest-wins picked it, and AGP 8.2.1 dies on Gradle 9 with *Could not isolate value … BuildFlowService$Parameters* (it wants `org/gradle/api/internal/HasConvention`, removed in 9). The script now asks for 8.2.1 by name |
 | JDK | `JAVA_HOME=/opt/homebrew/opt/openjdk@17` — AGP 8.2.1 needs 17, not 21 |
 | `screencapture` | Needs Screen Recording permission; unavailable, so UI could not be visually checked. Headless Chrome was used for the panel screenshots |
+| `apksigner` | Needs `JAVA_HOME=/opt/homebrew/opt/openjdk@17` in the environment or it reports *Unable to locate a Java Runtime*. `build-android.sh` sets it; a bare shell does not |
 | QR generation | macOS CoreImage via JXA (`tools/qrgen.js`). No pip install. `tools/qrread.js` decodes, and every generated QR should be decoded to confirm it scans |
 
 ## Machine-local state (not in the repo)
@@ -143,7 +218,7 @@ These cost hours. They are properties of the environment, not the code.
 | `~/.filebridge/key` | access key | **Secret.** Persisted so pairing survives restarts. Delete to unpair every device |
 | `~/.filebridge/state.json` | taken flags, cached durations | Safe to delete |
 | `~/.filebridge/gui.log` | server + launcher output | First place to look when the app "does nothing" |
-| `/tmp/filebridge_clients.txt` | last phone seen | 45 s freshness window |
+| `/tmp/filebridge_clients.txt` | last phone seen | 45 s freshness window. Reads back as two whitespace-separated fields, which is why a wired phone is recorded as `usb` and not a label with a space in it |
 
 ## Getting going
 
@@ -153,7 +228,8 @@ python3 filebridge.py ~/FileBridge --port 8001 --token devkey
 ```
 
 Panel: `http://127.0.0.1:8001/connect` · Browse view:
-`http://127.0.0.1:8001/?t=devkey`
+`http://127.0.0.1:8001/?t=devkey` · Wired listener: `127.0.0.1:8002`, which
+should answer `403` to `/connect` and `200` to `/api/list?t=devkey`.
 
 Build the app bundle with `./scripts/build-mac-app.sh`, the APK with
 `./scripts/build-android.sh`.
