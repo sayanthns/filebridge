@@ -10,8 +10,8 @@ Last updated: 2026-09-08.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.14.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
-| Mac app | 1.14.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Server (`filebridge.py`) | 1.15.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
+| Mac app | 1.15.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
 | Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -58,7 +58,30 @@ Untried on-device leads, in likelihood order: the toggle silently reverting on
 replug, an HDB / "allow HiSuite to use HDB" gate, and an HONOR ID sign-in
 precondition that is widely reported on global MagicOS.
 
-**So there are two wired paths, and tethering is the one that needs no
+**And tethering does not work on macOS either. Both cable paths are dead on
+this pair of machines.** This is the conclusion of the whole exercise, so do not
+re-run it hoping for a different answer. Turning USB tethering on *did* take
+effect — the phone rebuilt its USB function set (`idProduct` 4221 → 4234,
+unlike the adb attempt, which never changed it) and published:
+
+```
+RNDIS Communications Control@0   239/4/1
+RNDIS Ethernet Data@1             10/0/0
+```
+
+Android tethers over **RNDIS**. macOS has never shipped an RNDIS driver — it
+has `AppleUSBECM.kext` and `AppleUSBNCM.kext`, for CDC ECM and NCM, and nothing
+for RNDIS. Both interfaces matched only the generic `IOUSBHostInterface`, zero
+network nodes bound, no `enX`, no address. Server 1.15.0 detects exactly this
+and the panel says *"Tethering, but macOS cannot use it"* rather than the true
+and useless *"No phone on the cable"*. HoRNDIS was the third-party fix; it is an
+unsigned, unmaintained kext and not viable on Apple Silicon.
+
+So: **wifi is the only working transport on this Mac and this phone.** The
+cable code is complete and tested to the socket, and it is waiting on either a
+phone that publishes adb or one that tethers over NCM.
+
+**There are two wired paths, and tethering is the one that needs no
 permission.** `tether_ip()` recognises `192.168.42.x`, the fixed subnet Android
 USB tethering always builds, and `/qr.png?tether=1` encodes it — necessary
 because adb pairing works by *firing* a deep link at the phone, and with no adb
@@ -166,12 +189,14 @@ path.
   folder
 
 **Not verified — treat as unknown:**
-- **USB tethering itself.** Detection, the `tether` block, the tethered QR and
-  its decode were all exercised — but by pointing `TETHER_NET` at a subnet this
-  Mac was already on, because turning tethering on is a phone-side action that
-  has not happened yet. Whether macOS brings up an interface for this Honor at
-  all (it has no native RNDIS; CDC-NCM it does support) is **unknown**, and so
-  is whether the phone's route table lets an app reach a tethered host
+- **USB tethering carrying real traffic.** Tethering was turned on and the
+  RNDIS detection is confirmed against the live phone (`rndis_on_cable()` →
+  `True` in 23 ms), so we know for certain macOS binds no driver. What remains
+  untested is the path *after* an interface exists: `tether_ip()`, the `tether`
+  status block and the tethered QR were exercised by pointing `TETHER_NET` at a
+  subnet this Mac was already on, and whether an Android app can actually reach
+  a tethered host through its own route table is still unknown. It needs a phone
+  that tethers over CDC ECM or NCM
 - **`adb reverse` and `adb shell am start` against a real device.** The two
   calls the adb path rests on. USB debugging is off on the phone here, so
   `adb devices` is empty and the whole adb half is reasoned from the code plus
@@ -203,12 +228,10 @@ path.
 
 1. **Get one of the two wired paths onto real hardware.** Everything else about
    both is measured; this is the only gap left.
-   - *Tethering* is the cheaper try, because it needs nothing from Developer
-     options: Settings → Mobile network → Tethering → USB tethering. Then
-     `ifconfig` should show a new interface with a `192.168.42.x` address, the
-     panel's Cable card should light up on its own, and "Show cable QR" gives
-     the phone a link to scan. If no interface appears, macOS has no driver for
-     this phone's tethering mode and that path is dead here.
+   - *Tethering* has been tried and is **dead on this Honor**: it tethers over
+     RNDIS and macOS has no driver. Only worth retrying with a phone that
+     tethers over CDC ECM or NCM, in which case `ifconfig` should show a
+     `192.168.42.x` address and the Cable card lights up on its own.
    - *adb* is the better transport if MagicOS can be talked into it — see the
      descriptor evidence above for what to check. Then "Pair over cable" in the
      panel, and `adb reverse --list` should print `tcp:8001 tcp:8002`.
@@ -251,7 +274,8 @@ These cost hours. They are properties of the environment, not the code.
 | Gradle | Not on `PATH`. `scripts/build-android.sh` finds a cached distribution under `~/.gradle/wrapper/dists`. **It must be a 8.x one** — a cached 9.7.1 appeared and newest-wins picked it, and AGP 8.2.1 dies on Gradle 9 with *Could not isolate value … BuildFlowService$Parameters* (it wants `org/gradle/api/internal/HasConvention`, removed in 9). The script now asks for 8.2.1 by name |
 | JDK | `JAVA_HOME=/opt/homebrew/opt/openjdk@17` — AGP 8.2.1 needs 17, not 21 |
 | `screencapture` | Needs Screen Recording permission; unavailable, so UI could not be visually checked. Headless Chrome was used for the panel screenshots |
-| Honor MTN-NX1 | Enumerates as `HONOR MTN-NX1`, serial `ANMV6R5A30006550`, `idVendor` 13211 / `idProduct` 4221, **USB 2.0 High Speed** (`Device Speed = 2`). Presents a mass-storage CD-ROM (HiSuite autorun) and refuses to publish an adb interface — see above |
+| Honor MTN-NX1 | `HONOR MTN-NX1`, serial `ANMV6R5A30006550`, `idVendor` 13211, **USB 2.0 High Speed** (`Device Speed = 2`) in both modes. `idProduct` 4221 = MTP + HiSuite CD-ROM, **no adb interface ever**; 4234 = RNDIS tethering, **which macOS cannot drive**. Neither cable path works with this phone |
+| macOS + Android tethering | No RNDIS driver, and never has been. `/System/Library/Extensions` has `AppleUSBECM.kext` and `AppleUSBNCM.kext` only. Android tethers over RNDIS, so USB tethering to a Mac is a dead end unless the phone offers NCM |
 | `apksigner` | Needs `JAVA_HOME=/opt/homebrew/opt/openjdk@17` in the environment or it reports *Unable to locate a Java Runtime*. `build-android.sh` sets it; a bare shell does not |
 | QR generation | macOS CoreImage via JXA (`tools/qrgen.js`). No pip install. `tools/qrread.js` decodes, and every generated QR should be decoded to confirm it scans |
 

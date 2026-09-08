@@ -24,7 +24,7 @@ The same API, reached two ways. Nothing above the socket knows which.
 |---|---|---|---|
 | Listener | `0.0.0.0:8001` | `127.0.0.1:8002`, flagged `wired` | `0.0.0.0:8001` |
 | Phone dials | `http://<lan-ip>:8001` | `http://127.0.0.1:8001` on the phone | `http://192.168.42.x:8001` |
-| Carried by | the network | `adb reverse tcp:8001 tcp:8002` | an RNDIS/NCM link on the cable |
+| Carried by | the network | `adb reverse tcp:8001 tcp:8002` | a CDC ECM/NCM link on the cable |
 | Needs | same wifi | USB debugging + one "Allow" tap | **nothing** in Developer options |
 | Pairs by | QR | deep link fired over adb | QR (`/qr.png?tether=1`) |
 | A VPN can break it | **yes** | no — nothing is routed | **yes** — it is plain IP |
@@ -32,7 +32,11 @@ The same API, reached two ways. Nothing above the socket knows which.
 
 Prefer adb when the phone allows it: loopback cannot be routed, so it is the
 only one of the three a VPN cannot touch. Tethering exists because a phone may
-simply refuse to publish an adb interface — see the dead ends.
+simply refuse to publish an adb interface — but on macOS it only works if the
+phone tethers over CDC ECM or NCM. **Android tethers over RNDIS, which macOS
+cannot drive at all**, so on the hardware here neither cable path works. Both
+dead ends are written up below; the panel reports which one you are hitting
+rather than leaving you to guess.
 
 ```
 Mac                                                        Phone
@@ -197,6 +201,34 @@ explicit action plus a scheduled sweep.
 **`0700` permissions on served files.** nginx-style handoff aside, anything that
 another user's process must read cannot be `0700`. Relevant if you add an
 X-Accel-style path later.
+
+**Assuming USB tethering gives macOS a network interface.** It does not, for
+Android. Android's tethering gadget is **RNDIS** — Microsoft's protocol,
+control interface class 239 / subclass 4 / protocol 1 — and macOS has never
+shipped a driver for it. It ships `AppleUSBECM.kext` and `AppleUSBNCM.kext`,
+for CDC ECM and CDC NCM, and nothing for RNDIS.
+
+Measured on the Honor here. Turning tethering on *did* rebuild the USB function
+set — `idProduct` went 4221 → 4234, unlike the adb attempt — and the phone
+published:
+
+```
+RNDIS Communications Control@0   239/4/1
+RNDIS Ethernet Data@1             10/0/0
+```
+
+Both matched only the generic `IOUSBHostInterface`. Zero network driver nodes
+bound, no `enX`, no address, so `tether_ip()` correctly finds nothing. The
+phone believes it is tethering and the Mac cannot see it.
+
+This is why `rndis_on_cable()` exists: "a phone is tethering and this Mac
+cannot use it" is a completely different report from "nobody turned tethering
+on", and without it someone will go hunting a driver that does not exist.
+HoRNDIS was the third-party answer; it is an unsigned kext, unmaintained, and
+not viable on Apple Silicon. Detection matches the node *name* rather than the
+descriptor because the authoritative query costs 350 ms and 5 MB while the
+names cost 25 ms — and the names come from the Linux kernel's `f_rndis` gadget,
+not from a vendor, so they are safe to trust.
 
 **Assuming "USB debugging is on" means adb can see the phone.** On the Honor
 this was built against, MagicOS never added the adb function to the USB

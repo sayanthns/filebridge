@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.14.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.14.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.15.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.15.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,28 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.15.0
+- **Says so when the phone is tethering in a form macOS cannot use.** Turning
+  USB tethering on *did* work — the Honor rebuilt its USB function set
+  (`idProduct` 4221 → 4234, unlike the adb attempt) and published
+  `RNDIS Communications Control` (239/4/1) and `RNDIS Ethernet Data` (10/0/0).
+  But Android tethers over **RNDIS**, and macOS has never shipped a driver for
+  it: it has `AppleUSBECM.kext` and `AppleUSBNCM.kext` and nothing else. Both
+  interfaces matched only the generic `IOUSBHostInterface`, no network node
+  bound, no `enX` appeared, and `tether_ip()` correctly found nothing.
+- Without this, the panel would have said "No phone on the cable" — which is
+  true and useless, and would send someone hunting a driver that does not
+  exist. `rndis_on_cable()` separates "a phone is tethering and this Mac cannot
+  use it" from "nobody turned tethering on", and the Cable card now names RNDIS
+  and points at USB debugging or wifi instead.
+- Detected by node name, not descriptor. The authoritative query
+  (`ioreg -l -c IOUSBHostInterface`) costs **350 ms and 5 MB**; the names cost
+  **25 ms**. Safe, because those strings come from the Linux kernel's `f_rndis`
+  gadget rather than from a vendor. It runs in the watch thread, never in a
+  request — `/api/status` is polled every 2.5 s.
+- The watch thread now starts whether or not adb is present, since a tethering
+  phone is worth watching for either way.
 
 ### 1.14.0
 - **USB tethering as a second wired path**, because the first one did not
@@ -158,6 +180,9 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.15.0
+- Ships server 1.15.0, so the Cable card can tell you RNDIS is the problem.
 
 ### 1.14.0
 - Ships server 1.14.0, so the Cable card also covers USB tethering and can show

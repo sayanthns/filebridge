@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.15.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -68,6 +68,7 @@ USB = {
     "devices": [],      # serials in the "device" state, ready to use
     "waiting": [],      # [serial, state] for unauthorized / offline ones
     "armed": [],        # serials whose reverse mapping we last set successfully
+    "rndis": False,     # a phone is tethering over RNDIS, which macOS cannot drive
 }
 
 # Stop Sharing pauses instead of exiting. Killing the process meant the panel
@@ -199,6 +200,32 @@ def interface_ips():
             if not addr.startswith("127."):
                 found.append((name, addr))
     return found
+
+
+def rndis_on_cable():
+    """Is a phone offering USB tethering in a form macOS cannot use?
+
+    Android's tethering gadget is RNDIS (Microsoft's protocol: control
+    interface class 239 / subclass 4 / protocol 1). macOS ships drivers for
+    CDC ECM and CDC NCM — AppleUSBECM.kext, AppleUSBNCM.kext — and has never
+    shipped one for RNDIS. So the interfaces enumerate, no ethernet driver
+    binds to them, no `enX` appears, and tether_ip() finds nothing: the phone
+    believes it is tethering and the Mac cannot see it. Measured on the Honor
+    here, which re-enumerated with `idProduct` 4221 -> 4234 and published
+    `RNDIS Communications Control` + `RNDIS Ethernet Data` and no network node
+    at all.
+
+    Detected by node name rather than by descriptor because the authoritative
+    query (`ioreg -l -c IOUSBHostInterface`) costs 350 ms and 5 MB, while the
+    names alone cost 25 ms. The names are safe to trust: they come from the
+    Linux kernel's f_rndis gadget, not from a vendor.
+    """
+    try:
+        out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOUSBHostInterface", "-w0"],
+                             capture_output=True, text=True, timeout=8)
+    except Exception:
+        return False
+    return "RNDIS" in (out.stdout or "")
 
 
 def tether_ip():
@@ -341,9 +368,13 @@ def usb_watch():
     adb server if it is not already up; --no-wired is how you avoid that.
     """
     while True:
-        ready, waiting = adb_devices()
-        USB["devices"], USB["waiting"] = ready, waiting
-        USB["armed"] = [s for s in ready if arm_reverse(s)]
+        # Runs with or without adb, because the other thing worth watching for
+        # is a phone that has started tethering in a form macOS cannot drive.
+        USB["rndis"] = rndis_on_cable()
+        if USB["adb"]:
+            ready, waiting = adb_devices()
+            USB["devices"], USB["waiting"] = ready, waiting
+            USB["armed"] = [s for s in ready if arm_reverse(s)]
         time.sleep(5)
 
 
@@ -922,7 +953,10 @@ class Handler(BaseHTTPRequestHandler):
         """What the panel needs to offer a USB-tethered link."""
         addr = tether_ip()
         if not addr:
-            return {"on": False}
+            # rndis says "a phone IS tethering, and this Mac cannot use it" —
+            # a very different thing from "nobody turned tethering on", and
+            # the only way to stop someone hunting a driver that does not exist.
+            return {"on": False, "rndis": USB["rndis"]}
         port = str(self.server.server_address[1])
         return {"on": True, "ip": addr,
                 "link": "http://" + addr + ":" + port + "/?t=" + self.server.token}
@@ -1171,9 +1205,16 @@ function renderUsb(){
   const unauth = (usb.waiting || []).some(w => w[1] === "unauthorized");
   const live = client === "usb";
   const tethered = !!(tether && tether.on);
+  const rndis = !!(tether && !tether.on && tether.rndis);
   $("usbqr").style.display = tethered && !live ? "" : "none";
   let state, hint, offer = ready;
-  if(tethered && !ready){
+  if(rndis && !ready){
+    state = "Tethering, but macOS cannot use it";
+    hint = "The phone is sharing over RNDIS. macOS ships ECM and NCM drivers " +
+           "and never shipped one for RNDIS, so no network interface appears. " +
+           "Turn tethering off and use USB debugging instead, or stay on wifi.";
+    offer = false;
+  }else if(tethered && !ready){
     // USB tethering needs nothing from Developer options, which is the whole
     // reason it is offered: MagicOS would not publish an adb interface at all.
     // No adb means no deep link to fire, so pairing is a scan.
@@ -1619,8 +1660,7 @@ def main():
             else:
                 USB["on"] = True
                 threading.Thread(target=wired.serve_forever, daemon=True).start()
-                if USB["adb"]:
-                    threading.Thread(target=usb_watch, daemon=True).start()
+                threading.Thread(target=usb_watch, daemon=True).start()
 
     url = "http://" + lan_ip() + ":" + str(args.port) + "/?t=" + token
     print("")
