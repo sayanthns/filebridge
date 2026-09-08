@@ -10,8 +10,8 @@ Last updated: 2026-09-08.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.18.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
-| Mac app | 1.18.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Server (`filebridge.py`) | 1.19.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
+| Mac app | 1.19.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
 | Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -71,6 +71,19 @@ What each needs to come alive:
 |---|---|---|
 | Tethering | macOS has no RNDIS driver | a phone that tethers over CDC ECM or NCM |
 | `adb reverse` | MagicOS never publishes the adb interface | USB debugging that actually re-enumerates, then find out why `am start` refused — 1.17.0 logs it |
+
+**The phone keeps turning USB tethering back on by itself.** Observed three
+times: `idProduct` returns to **4234** with live `RNDIS Communications Control`
+and `RNDIS Ethernet Data` nodes, minutes after being confirmed off at **4221**
+with zero RNDIS nodes. The detection is not sticky — it was re-checked against
+`ioreg` each time and the nodes were genuinely there.
+
+This is probably the whole explanation for the adb interface never appearing.
+MagicOS looks to be auto-enabling USB tethering when a host is attached, and the
+RNDIS composition it builds **does not include adb**. The one adb sighting came
+seconds after a *manual* tethering toggle — a transition window, not a steady
+state. So the thing to hunt on the phone is whatever re-arms tethering on
+connect, not the USB debugging switch on its own.
 
 **adb HAS seen this phone once, and the tunnel came up.** This contradicts the
 paragraph below it, so read both. A `Pair over cable` press logged
@@ -325,6 +338,7 @@ These cost hours. They are properties of the environment, not the code.
 | Gradle | Not on `PATH`. `scripts/build-android.sh` finds a cached distribution under `~/.gradle/wrapper/dists`. **It must be a 8.x one** — a cached 9.7.1 appeared and newest-wins picked it, and AGP 8.2.1 dies on Gradle 9 with *Could not isolate value … BuildFlowService$Parameters* (it wants `org/gradle/api/internal/HasConvention`, removed in 9). The script now asks for 8.2.1 by name |
 | JDK | `JAVA_HOME=/opt/homebrew/opt/openjdk@17` — AGP 8.2.1 needs 17, not 21 |
 | `screencapture` | Needs Screen Recording permission; unavailable, so UI could not be visually checked. Headless Chrome was used for the panel screenshots |
+| Honor auto-tethering | The phone re-enables USB tethering on its own when plugged into this Mac — seen three times returning to `idProduct` 4234. That composition carries RNDIS and **no adb interface**, which is very likely why adb never appears in a steady state |
 | Honor MTN-NX1 | `HONOR MTN-NX1`, serial `ANMV6R5A30006550`, `idVendor` 13211, **USB 2.0 High Speed** (`Device Speed = 2`) in both modes. `idProduct` 4221 = MTP + HiSuite CD-ROM, **no adb interface ever**; 4234 = RNDIS tethering, **which macOS cannot drive**. Neither cable path works with this phone |
 | macOS + Android tethering | No RNDIS driver, and never has been. `/System/Library/Extensions` has `AppleUSBECM.kext` and `AppleUSBNCM.kext` only. Android tethers over RNDIS, so USB tethering to a Mac is a dead end unless the phone offers NCM |
 | `apksigner` | Needs `JAVA_HOME=/opt/homebrew/opt/openjdk@17` in the environment or it reports *Unable to locate a Java Runtime*. `build-android.sh` sets it; a bare shell does not |

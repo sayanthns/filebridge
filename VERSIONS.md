@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.18.1** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.18.1** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.19.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.19.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,28 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.19.0
+- **The cable pairs itself the moment a phone appears on it.** This is the whole
+  reason the watch loop exists rather than a button alone. On the one occasion
+  this phone did publish an adb interface, it was there for less time than it
+  takes to notice and click — the tunnel came up in that window, `armed` was
+  populated, and the pairing went unused because nobody was fast enough. The
+  loop now arms and fires the deep link on its own, once per appearance:
+  `am start` every 5 s would keep yanking the app to the foreground. A serial
+  is forgotten when it disappears, so a replug pairs again. `--no-autopair`
+  turns it off.
+- **`--adb` points at a different adb binary.** Needed by anyone whose SDK is
+  somewhere `find_adb()` does not look, and it is how the cable path finally got
+  tested without a phone: point it at a stub that reports one device, accepts
+  `reverse`, and refuses `am start` the way the real phone did. That test is
+  what confirmed autopair fires exactly once over two ticks, clears on unplug,
+  re-fires on replug, and that the `AM start:` log line keeps the refusal text
+  while redacting the key.
+- **This does not make the cable work by itself.** The phone still has to
+  publish an adb interface, which is the part no code here can influence — see
+  HANDOFF.md. What it removes is the human timing problem, which was a real
+  reason a working tunnel got wasted.
 
 ### 1.18.1
 - **The panel stops misreporting its own version.** `__VER__` is substituted
@@ -250,6 +272,9 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.19.0
+- Ships server 1.19.0.
 
 ### 1.18.1
 - Ships server 1.18.1.

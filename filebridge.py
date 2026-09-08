@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.18.1"
+APP_VERSION = "1.19.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -69,6 +69,8 @@ USB = {
     "waiting": [],      # [serial, state] for unauthorized / offline ones
     "armed": [],        # serials whose reverse mapping we last set successfully
     "rndis": False,     # a phone is tethering over RNDIS, which macOS cannot drive
+    "paired": [],       # serials we have already fired the deep link at
+    "autopair": True,   # pair the moment a phone appears, without a button press
 }
 
 # Stop Sharing pauses instead of exiting. Killing the process meant the panel
@@ -76,6 +78,10 @@ USB = {
 # and relaunching the app. Paused = the LAN is refused, the Mac panel still
 # works, and Start resumes.
 PAUSED = {"on": False}
+
+# The watch thread pairs on its own, and unlike a request handler it has no
+# server object to read the key from.
+SERVER_TOKEN = {"v": ""}
 
 _state_lock = threading.Lock()
 _state = {"downloaded": {}, "durations": {}}
@@ -410,6 +416,24 @@ def usb_watch():
             ready, waiting = adb_devices()
             USB["devices"], USB["waiting"] = ready, waiting
             USB["armed"] = [s for s in ready if arm_reverse(s)]
+
+            # Forget phones that have gone, so replugging one pairs it again.
+            USB["paired"] = [s for s in USB["paired"] if s in USB["armed"]]
+
+            # Pair without waiting to be asked. This is the whole reason the
+            # loop exists rather than a button alone: on the one occasion this
+            # phone did publish an adb interface, it was there for less time
+            # than it takes to notice and click, and the tunnel that came up
+            # in that window went unused. Fire once per appearance — `am start`
+            # every 5 s would keep yanking the app to the foreground.
+            if USB["autopair"]:
+                for serial in USB["armed"]:
+                    if serial in USB["paired"]:
+                        continue
+                    USB["paired"].append(serial)
+                    print("  AUTOPAIR: " + serial + " appeared, tunnel armed",
+                          flush=True)
+                    push_deep_link(serial, usb_deep_link(SERVER_TOKEN["v"]))
         time.sleep(5)
 
 
@@ -544,6 +568,8 @@ class Handler(BaseHTTPRequestHandler):
                     "devices": USB["devices"],
                     "waiting": USB["waiting"],
                     "armed": USB["armed"],
+                    "paired": USB["paired"],
+                    "autopair": USB["autopair"],
                 },
             })
 
@@ -1309,7 +1335,10 @@ function renderUsb(){
            "USB tethering, which needs none of them.";
   }else{
     state = usb.link;
-    hint = "Opens the app on the phone already connected - no QR, no typing.";
+    hint = usb.autopair
+      ? "Phone on the cable, tunnel up. The app is opened for you the moment " +
+        "it appears - press this to try again, or Show cable QR to scan."
+      : "Opens the app on the phone already connected - no QR, no typing.";
   }
   $("usbdot").classList.toggle("on",
     live || (usb.armed || []).length > 0 || tethered);
@@ -1687,6 +1716,13 @@ def main():
                              "(default: same as --port)")
     parser.add_argument("--no-wired", action="store_true",
                         help="skip the cable entirely, and never start adb")
+    parser.add_argument("--adb", default="",
+                        help="path to adb, when it is somewhere find_adb() "
+                             "does not look. Also how the cable path gets "
+                             "tested without a phone: point it at a stub")
+    parser.add_argument("--no-autopair", action="store_true",
+                        help="do not open the app on a phone the moment it "
+                             "appears on the cable; wait for the panel button")
     parser.add_argument("--tether-net", default=TETHER_NET,
                         help="address prefix that counts as a USB-tethered "
                              "phone (default 192.168.42., Android's fixed "
@@ -1708,6 +1744,7 @@ def main():
 
     load_state()
     token = args.token or secrets.token_urlsafe(9)
+    SERVER_TOKEN["v"] = token
 
     # The Finder Quick Actions ("Copy to Phone") need to know where to put
     # things, and the folder is a command-line argument rather than a constant.
@@ -1734,7 +1771,8 @@ def main():
     # phone from this Mac is which socket it arrived on. See Handler._local().
     wired = None
     if not args.no_wired:
-        USB["adb"] = find_adb()
+        USB["adb"] = args.adb or find_adb()
+        USB["autopair"] = not args.no_autopair
         USB["phone_port"] = args.phone_port or args.port
         USB["host_port"] = args.wired_port or (args.port + 1)
         why = ""
