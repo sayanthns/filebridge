@@ -5,8 +5,8 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.17.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.17.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Server | **1.18.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.18.0** | `FileBridge.app` → `CFBundleShortVersionString` |
 | Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
@@ -16,6 +16,29 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.18.0
+- **The access key is no longer written into `gui.log`.** This one predates the
+  cable work and is the worst thing found while finishing it. `log_message`
+  logged `self.path` verbatim, and every phone request carries `?t=<key>` — so
+  the live key sat **758 times** in a mode **644** `gui.log`, while
+  `~/.filebridge/key` holds the identical secret at mode **600**. It is also
+  the file every note here calls "the first place to look", and the file
+  someone pastes when asking for help. Request lines now read `t=<key>`, the
+  launcher `chmod 600`s the log on every launch (fixing logs written by older
+  versions too), and one `hide_key()` does the redaction for both the request
+  log and the `am start` output.
+- **`--tether-net` makes the tethered path testable.** It was the least-verified
+  thing here for a bad reason: exercising it needed a `sed` on `TETHER_NET` in
+  the source and a copy of `tools/` beside the temporary file. Point the flag at
+  a subnet this Mac is already on and the whole path runs for real — detection,
+  the `tether` status block, the QR, and the security gate that has to treat a
+  caller on that subnet as a phone rather than as this machine.
+- **The startup banner prints the tethered link**, and stops implying one claim
+  covers both cable paths. A VPN cannot swallow loopback; it can absolutely
+  swallow a tethered address, and the two lines now say so separately.
+- The RNDIS message says what *would* work — a phone that tethers over CDC ECM
+  or NCM — rather than only what does not.
 
 ### 1.17.0
 - **`am start` now says why it refused.** Only its exit code and the absence of
@@ -216,6 +239,9 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Mac app
+
+### 1.18.0
+- Ships server 1.18.0.
 
 ### 1.17.0
 - Ships server 1.17.0.

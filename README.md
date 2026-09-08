@@ -148,6 +148,10 @@ Worth understanding before you use it on a network you do not control.
   the key on the network at all.
 - **The key persists** in `~/.filebridge/key` so the phone stays paired across
   restarts. Delete that file to invalidate every paired device.
+- **`~/.filebridge/gui.log` is kept at mode 600** and request lines have the key
+  redacted, because the startup banner prints the full link. A log written by a
+  version before 1.18.0 has the key in it in the clear — it is re-chmodded on
+  the next launch, but delete it if you have ever shared it.
 
 ## Development
 
@@ -179,8 +183,9 @@ The wired listener comes up alongside it on `127.0.0.1:8002` and can be driven
 with `curl` without any phone attached — it should answer `403` to `/connect`
 and `200` to `/api/list?t=devkey`. `--no-wired` skips it, and never starts adb.
 
-Tethering detection can be exercised without a phone by pointing `TETHER_NET`
-at a subnet the Mac is already on; the recipe is at the end of
+The tethered path can be exercised without a phone: `--tether-net 10.0.0.`
+points the detection at a subnet the Mac is already on and everything downstream
+runs for real. Full recipe at the end of
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **Three independent versions** — server, Mac app, Android app — because they

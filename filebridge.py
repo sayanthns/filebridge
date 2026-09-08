@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -175,6 +175,10 @@ def duration_of(path, size, mtime):
 # recognising it is how we tell "a phone is on the cable" from "someone plugged
 # in a dock" — far more honest than guessing from interface names, which differ
 # per Mac (en5, en6, en7...).
+# Overridable with --tether-net, which is the only way to exercise any of this
+# on a Mac that cannot bind the phone's tethering interface: point it at a
+# subnet this machine is already on and the whole path runs for real. It was a
+# `sed` on this line before, which is not a thing to ask of anyone.
 TETHER_NET = "192.168.42."
 
 
@@ -263,6 +267,21 @@ ADB_PLACES = (
     "/usr/local/bin/adb",
     os.path.expanduser("~/Android/Sdk/platform-tools/adb"),
 )
+
+
+def hide_key(text):
+    """Blank an access key out of anything about to be written to a file.
+
+    The key is deliberately kept at mode 600 in ~/.filebridge/key, and was then
+    written 758 times into a mode 644 gui.log — the file every note here tells
+    you to read first, and the one people paste when asking for help. Every
+    phone request carries ?t=<key> in its path, so request logging spilled it
+    on every line.
+
+    The lookbehind matters: a bare `t=` also occurs inside `act=` and `dat=`,
+    which `am start` prints, and blanking those destroys the diagnostic.
+    """
+    return re.sub(r"(?<![A-Za-z0-9_])t=[^&\s}\"'&]+", "t=<key>", text)
 
 
 def find_adb():
@@ -361,10 +380,7 @@ def push_deep_link(serial, link):
     # and that URI carries the access key: logging it verbatim would write the
     # key into ~/.filebridge/gui.log, which is the first file anyone is told to
     # read when the app misbehaves.
-    # The lookbehind matters: a bare `t=` also appears inside `act=` and
-    # `dat=`, and redacting those would throw away the very thing being logged.
-    safe = re.sub(r"(?<![A-Za-z0-9_])t=[^&\s}\"']+", "t=<key>",
-                  said).replace("\n", " | ")
+    safe = hide_key(said).replace("\n", " | ")
     print("  AM start: rc=" + str(out.returncode) + " " +
           (safe[:300] or "(said nothing)"), flush=True)
     if out.returncode != 0:
@@ -419,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         if "/api/" in self.path or self.path.startswith("/file"):
-            sys.stderr.write("  " + (fmt % args)[:110] + "\n")
+            sys.stderr.write("  " + hide_key(fmt % args)[:110] + "\n")
 
     def _local(self):
         """Is the caller this Mac, and so allowed the control surface?
@@ -1262,9 +1278,10 @@ function renderUsb(){
   let state, hint, offer = ready;
   if(rndis && !ready){
     state = "Tethering, but macOS cannot use it";
-    hint = "The phone is sharing over RNDIS. macOS ships ECM and NCM drivers " +
-           "and never shipped one for RNDIS, so no network interface appears. " +
-           "Turn tethering off and use USB debugging instead, or stay on wifi.";
+    hint = "The phone is sharing over RNDIS, and macOS has no driver for it - " +
+           "it ships ECM and NCM only, so no network interface appears. " +
+           "Nothing here can fix that: it needs a phone that tethers over " +
+           "CDC ECM or NCM. Use wifi, or USB debugging if the phone allows it.";
     offer = false;
   }else if(tethered && !ready){
     // USB tethering needs nothing from Developer options, which is the whole
@@ -1650,6 +1667,10 @@ load('');
 
 
 def main():
+    # Declared up here because the parser reads TETHER_NET for its own default,
+    # and a global statement has to precede every use in the function.
+    global TETHER_NET
+
     parser = argparse.ArgumentParser(description="Share a folder with your phone.")
     parser.add_argument("root", nargs="?", default=DEFAULT_ROOT,
                         help="folder to serve (default ~/FileBridge)")
@@ -1662,7 +1683,15 @@ def main():
                              "(default: same as --port)")
     parser.add_argument("--no-wired", action="store_true",
                         help="skip the cable entirely, and never start adb")
+    parser.add_argument("--tether-net", default=TETHER_NET,
+                        help="address prefix that counts as a USB-tethered "
+                             "phone (default 192.168.42., Android's fixed "
+                             "tethering subnet). Point it at a subnet this Mac "
+                             "is already on to exercise the tethered path "
+                             "without a phone")
     args = parser.parse_args()
+
+    TETHER_NET = args.tether_net
 
     root = os.path.abspath(os.path.expanduser(args.root))
     if root == DEFAULT_ROOT:
@@ -1732,9 +1761,17 @@ def main():
     print("  " + url)
     print("")
     print("  Same Wi-Fi required. The key keeps other devices on the network out.")
+    tethered = tether_ip()
+    if tethered:
+        # The tethered link is a real address, so say it plainly. Unlike the
+        # loopback one below, a VPN on the phone can still swallow this.
+        print("")
+        print("  OR OVER THE CABLE, tethered:")
+        print("  http://" + tethered + ":" + str(args.port) + "/?t=" + token)
+        print("  Scan it with \"Show cable QR\" in the panel.")
     if USB["on"]:
         print("")
-        print("  OR OVER THE CABLE (no wifi, and a VPN cannot swallow it):")
+        print("  OR OVER THE CABLE, through adb (a VPN cannot swallow loopback):")
         print("  " + usb_base() + "/?t=" + token)
         if USB["adb"]:
             print("  Press \"Pair over cable\" in the panel, or by hand:")

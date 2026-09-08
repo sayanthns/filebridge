@@ -10,8 +10,8 @@ Last updated: 2026-09-08.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.17.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
-| Mac app | 1.17.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Server (`filebridge.py`) | 1.18.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
+| Mac app | 1.18.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
 | Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -57,6 +57,20 @@ exists and only the Allow tap is missing.
 Untried on-device leads, in likelihood order: the toggle silently reverting on
 replug, an HDB / "allow HiSuite to use HDB" gate, and an HONOR ID sign-in
 precondition that is widely reported on global MagicOS.
+
+**Where the cable was left, deliberately.** Both wired paths are written,
+tested to the socket, and neither works on this Mac with this phone. The adb
+path is **parked, not abandoned** — it got further than any earlier note said
+(see below) — and tethering is the one to reach for first because it asks
+nothing of Developer options. Neither is a speed win; wifi moved this project's
+own APK at 17.34 MB/s against a USB 2.0 cable.
+
+What each needs to come alive:
+
+| Path | Blocked by | What would unblock it |
+|---|---|---|
+| Tethering | macOS has no RNDIS driver | a phone that tethers over CDC ECM or NCM |
+| `adb reverse` | MagicOS never publishes the adb interface | USB debugging that actually re-enumerates, then find out why `am start` refused — 1.17.0 logs it |
 
 **adb HAS seen this phone once, and the tunnel came up.** This contradicts the
 paragraph below it, so read both. A `Pair over cable` press logged
@@ -158,6 +172,9 @@ path.
 - Local-only routes: `403` from the LAN, `200` from `127.0.0.1`
 - Pause: LAN `503` while the panel still answers `200`, resume restores access
 - Uploads: byte-identical round trip, both chunked and fixed-length framing
+- **The key stays out of the log**: a request whose path carried the key
+  logs as `t=<key>`, confirmed on the live server, and `gui.log` comes
+  back `-rw-------`
 - `/api/bye`: clears the connected client immediately
 - Quit → relaunch: server `0` → `1`, no lingering launcher process
 - APK: manifest, permissions, bundled zxing classes, portrait scanner
@@ -207,14 +224,15 @@ path.
   folder
 
 **Not verified — treat as unknown:**
-- **USB tethering carrying real traffic.** Tethering was turned on and the
-  RNDIS detection is confirmed against the live phone (`rndis_on_cable()` →
-  `True` in 23 ms), so we know for certain macOS binds no driver. What remains
-  untested is the path *after* an interface exists: `tether_ip()`, the `tether`
-  status block and the tethered QR were exercised by pointing `TETHER_NET` at a
-  subnet this Mac was already on, and whether an Android app can actually reach
-  a tethered host through its own route table is still unknown. It needs a phone
-  that tethers over CDC ECM or NCM
+- **USB tethering carrying real traffic.** Everything up to the interface is
+  measured: tethering was turned on, RNDIS was confirmed against the live phone
+  (`rndis_on_cable()` → `True` in 23 ms), and macOS bound no driver. Everything
+  after a working interface is measured too, via `--tether-net` — detection, the
+  `tether` block, all three QR variants decoded, and a caller on the tethered
+  subnet correctly getting `200` for `/api/list?t=` and `403` for `/api/status`
+  and `/connect`. The single untested link is the middle one: a real ECM/NCM
+  interface, and whether an Android app can reach a tethered host through its
+  own route table
 - **`adb reverse` and `adb shell am start` against a real device.** The two
   calls the adb path rests on. USB debugging is off on the phone here, so
   `adb devices` is empty and the whole adb half is reasoned from the code plus
@@ -248,7 +266,12 @@ path.
 
 ## Open items
 
-1. **Finish the adb path — it got further than any note here previously said.**
+1. **Neither cable path is testable further on this hardware.** Both are code
+   complete. Tethering needs a phone that offers ECM/NCM; adb needs a phone that
+   publishes its interface. `--tether-net` exercises everything downstream of
+   detection without a phone, so the remaining gap is genuinely the driver and
+   the descriptor, not the code.
+2. **If you return to adb — it got further than any note here previously said.**
    The tunnel has been armed against this phone once. Turn USB tethering off
    first (it holds the phone in the RNDIS config, `idProduct` 4234), confirm
    `adb devices` lists it, press Pair over cable, and if `am start` still fails
@@ -263,28 +286,28 @@ path.
    - *adb* is the better transport if MagicOS can be talked into it — see the
      descriptor evidence above for what to check. Then "Pair over cable" in the
      panel, and `adb reverse --list` should print `tcp:8001 tcp:8002`.
-2. **Uploads cannot resume.** The server has one multipart `POST /api/upload`
+3. **Uploads cannot resume.** The server has one multipart `POST /api/upload`
    with no offset, so an interrupted send starts over. An endpoint taking a byte
    offset and appending to a temp file would close the last asymmetry between the
    two directions — downloads already resume.
-3. **No tests.** Everything above was `curl` by hand. The commands are listed at
+4. **No tests.** Everything above was `curl` by hand. The commands are listed at
    the end of ARCHITECTURE.md and would convert directly into a shell test
    script — that is the highest-value next task.
-4. **Debug-signed APK.** Installs and upgrades fine, but is not distributable.
+5. **Debug-signed APK.** Installs and upgrades fine, but is not distributable.
    Needs a release keystore, which is a credential the owner must create.
-5. **No iOS app.** The cable does not help here either — `adb` is Android
+6. **No iOS app.** The cable does not help here either — `adb` is Android
    only. iPhones can use the browse view at `/?t=<key>` instead.
-6. **The Mac app has no Dock tile of its own** while running. It is a launcher
+7. **The Mac app has no Dock tile of its own** while running. It is a launcher
    that exits by design (see ARCHITECTURE.md — keeping it alive is what caused
    the Force Quit bug). The panel window belongs to Chrome. A real tile needs a
    GUI process, and Tk cannot provide one on this machine.
-7. **Chrome reuses its `--app` window** for the same URL, and remembers its last
+8. **Chrome reuses its `--app` window** for the same URL, and remembers its last
    size — including full screen. If the panel comes up full screen, that is
    Chrome's memory, not the launcher, which asks for 560×880.
-8. **Plain HTTP.** Fine on a home LAN, wrong for shared wifi. TLS would mean a
+9. **Plain HTTP.** Fine on a home LAN, wrong for shared wifi. TLS would mean a
    self-signed cert and a trust prompt on the phone — or use the cable on
    shared wifi, which never puts the key on the network at all.
-9. **The adb watchdog spawns `adb devices` every 5 s** for as long as the server
+10. **The adb watchdog spawns `adb devices` every 5 s** for as long as the server
    runs, and its first tick starts the adb server if it is not already up. Both
    are deliberate — a reverse mapping dies on every unplug, so re-arming has to
    be a loop — but a watcher that only wakes on device attach would be cheaper.
@@ -318,7 +341,7 @@ These cost hours. They are properties of the environment, not the code.
 | `~/Library/Services/*.workflow` | Copy / Move to Phone | Installed by the launcher. `make_quick_actions.py --uninstall` removes them |
 | `~/.filebridge/key` | access key | **Secret.** Persisted so pairing survives restarts. Delete to unpair every device |
 | `~/.filebridge/state.json` | taken flags, cached durations | Safe to delete |
-| `~/.filebridge/gui.log` | server + launcher output | First place to look when the app "does nothing". Carries `AM start:` lines when cable pairing is attempted — with the access key redacted, deliberately, because `am` echoes the whole URI back |
+| `~/.filebridge/gui.log` | server + launcher output | First place to look when the app "does nothing". Held at **mode 600**, and request lines have the key redacted — before 1.18.0 the live key was in here **758 times** at mode 644 while the key file itself was 600. Carries `AM start:` lines when cable pairing is attempted, redacted the same way. **A log from before 1.18.0 still has the key in it in the clear** |
 | `/tmp/filebridge_clients.txt` | last phone seen | 45 s freshness window. Reads back as two whitespace-separated fields, which is why a wired phone is recorded as `usb` and not a label with a space in it |
 
 ## Getting going

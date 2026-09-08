@@ -12,6 +12,11 @@
 RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
 LOG="$HOME/.filebridge/gui.log"
 mkdir -p "$HOME/.filebridge"
+# The startup banner prints the full link, key and all, and this file is the one
+# every note points at first. It was mode 644 while ~/.filebridge/key was
+# carefully 600 - the same secret, a fifth of the protection. Tighten it on
+# every launch, including logs written by an older version.
+touch "$LOG" && chmod 600 "$LOG"
 PORT=8001
 URL="http://127.0.0.1:$PORT/connect"
 

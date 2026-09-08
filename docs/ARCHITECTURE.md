@@ -157,7 +157,7 @@ strand it on a `127.0.0.1` that nothing answers.
 |---|---|
 | `~/FileBridge/to-phone` | Mac → phone |
 | `~/FileBridge/from-phone` | phone → Mac |
-| `~/.filebridge/key` | access key, persisted so pairing survives restarts |
+| `~/.filebridge/key` | access key, persisted so pairing survives restarts. Mode 600, and `gui.log` is held at 600 for the same reason — the startup banner prints the full link |
 | `~/.filebridge/state.json` | taken flags + cached ffprobe durations |
 | `/tmp/filebridge_clients.txt` | last non-localhost client + timestamp (45 s freshness) |
 | `~/.filebridge/gui.log` | server + launcher output. First place to look |
@@ -279,6 +279,14 @@ zxing fills the first dex, so app code sits in `classes3.dex`. Grepping only
 `classes.dex` for a new string returns zero and looks exactly like a build that
 did not pick up the change.
 
+**Protecting a secret in one place and printing it in another.** The key is
+written to `~/.filebridge/key` at mode 600, deliberately. It was then logged
+**758 times** into a mode 644 `gui.log`, because `log_message` printed
+`self.path` and every phone request carries `?t=<key>`. Same secret, a fifth of
+the protection, in the file every troubleshooting note names first and the one
+people paste into issues. Redact at the boundary where text becomes a file —
+`hide_key()` — and match the permissions of the thing you are protecting.
+
 **Logging a subprocess's output without reading what is in it.** `am start`
 echoes the intent it launched, URI and all — and that URI carries the access
 key. Capturing its output for diagnosis therefore writes the key into
@@ -339,18 +347,27 @@ curl -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8002/api/list?t=$KEY"   
 # and the wifi socket still trusts loopback
 curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/connect             # 200
 
-# --- tethering. To exercise the detection without a phone, point TETHER_NET at
-# --- a subnet this Mac is already on; the code path is otherwise identical.
-sed 's|^TETHER_NET = "192.168.42."|TETHER_NET = "10.0.0."|' filebridge.py > /tmp/sim.py
-cp -R tools /tmp/tools          # _qr_png resolves tools/ next to the script
-python3 /tmp/sim.py ~/FileBridge --port 8881 --token devkey &
+# --- tethering. --tether-net points the detection at a subnet this Mac is
+# --- already on, so the whole tethered path runs for real without a phone.
+# --- (It used to need a sed on the source, which is not a thing to ask.)
+python3 filebridge.py ~/FileBridge --port 8881 --token devkey --tether-net 10.0.0. &
 curl -s http://127.0.0.1:8881/api/status | python3 -m json.tool | grep -A3 tether
-curl -so /tmp/q.png "http://127.0.0.1:8881/qr.png?tether=1"
-osascript -l JavaScript /tmp/tools/qrread.js /tmp/q.png    # must be the tether address
+
+# each QR must decode to a different host: wifi, the tether address, loopback
+for q in "" "tether=1" "usb=1"; do
+  curl -so /tmp/q.png "http://127.0.0.1:8881/qr.png?$q"
+  osascript -l JavaScript tools/qrread.js /tmp/q.png
+done
+
+# and a caller on the tethered subnet is a phone, not this Mac
+curl -o /dev/null -w '%{http_code}\n' "http://<tether-ip>:8881/api/list?t=devkey"  # 200
+curl -o /dev/null -w '%{http_code}\n' "http://<tether-ip>:8881/api/status"         # 403
+curl -o /dev/null -w '%{http_code}\n' "http://<tether-ip>:8881/connect"            # 403
 ```
 
 Decode every QR you generate — that is the only way to know it scans, and the
-`?tether=1` path has its own `_deep_link(host)` argument to get wrong.
+`?tether=1` and `?usb=1` paths both go through `_deep_link(host)`, which is one
+argument away from silently handing out the wifi address instead.
 
 To prove the guard is load-bearing rather than vacuous, delete these two lines
 from `_local()` and re-run the block above — the panel, the key and `/api/quit`
