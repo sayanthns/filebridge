@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 DEFAULT_ROOT = os.path.expanduser("~/FileBridge")
 INBOX_NAME = "from-phone"
 OUTBOX_NAME = "to-phone"
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.14.0"
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".avi", ".mp3", ".m4a"}
 CHUNK = 256 * 1024
 # Written whenever a phone (i.e. a non-localhost client) actually talks to us.
@@ -167,6 +167,52 @@ def duration_of(path, size, mtime):
 
     _state["durations"][key] = value
     return value
+
+
+# Android's USB tethering always builds this subnet: the phone takes .129 and
+# hands the host a lease in the same /24. It is a fixed, documented range, so
+# recognising it is how we tell "a phone is on the cable" from "someone plugged
+# in a dock" — far more honest than guessing from interface names, which differ
+# per Mac (en5, en6, en7...).
+TETHER_NET = "192.168.42."
+
+
+def interface_ips():
+    """[(ifname, ipv4)] for every up interface with an address.
+
+    socket alone cannot enumerate interfaces on macOS without ctypes, and this
+    is stdlib-only by design, so it reads ifconfig. Cheap, and only called when
+    the panel asks.
+    """
+    try:
+        out = subprocess.run(["/sbin/ifconfig"], capture_output=True,
+                             text=True, timeout=5)
+    except Exception:
+        return []
+    found, name = [], ""
+    for line in (out.stdout or "").splitlines():
+        if line and not line[0].isspace():
+            name = line.split(":")[0]
+        elif "inet " in line and name:
+            parts = line.split()
+            addr = parts[parts.index("inet") + 1]
+            if not addr.startswith("127."):
+                found.append((name, addr))
+    return found
+
+
+def tether_ip():
+    """Our address on the phone's USB-tethered subnet, or "".
+
+    USB tethering is the cable path that needs nothing from Developer options —
+    which matters, because MagicOS would not publish an adb interface at all on
+    the phone this was built against. It is plain IP, though, so unlike
+    `adb reverse` a full-tunnel VPN on the phone can still swallow it.
+    """
+    for _, addr in interface_ips():
+        if addr.startswith(TETHER_NET):
+            return addr
+    return ""
 
 
 def lan_ip():
@@ -423,6 +469,7 @@ class Handler(BaseHTTPRequestHandler):
                 "client": client, "seen": seen,
                 "root": self.server.root,
                 "to_phone": count(out_dir), "from_phone": count(in_dir),
+                "tether": self._tether_block(),
                 "usb": {
                     "on": USB["on"],
                     "adb": bool(USB["adb"]),
@@ -437,7 +484,12 @@ class Handler(BaseHTTPRequestHandler):
         if route in ("/connect", "/qr.png"):
             if not self._local():
                 return self._json({"error": "localhost only"}, HTTPStatus.FORBIDDEN)
-            return self._connect_page() if route == "/connect" else self._qr_png()
+            if route == "/connect":
+                return self._connect_page()
+            # ?tether=1 encodes the USB-tethered address instead of the wifi
+            # one, so pairing over the cable is still a scan when there is no
+            # adb to fire a deep link with.
+            return self._qr_png(tether_ip() if query.get("tether") else None)
 
         # Paused: the phone is turned away, the Mac panel keeps working.
         if self._paused_out():
@@ -866,6 +918,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- connect page (localhost only)
 
+    def _tether_block(self):
+        """What the panel needs to offer a USB-tethered link."""
+        addr = tether_ip()
+        if not addr:
+            return {"on": False}
+        port = str(self.server.server_address[1])
+        return {"on": True, "ip": addr,
+                "link": "http://" + addr + ":" + port + "/?t=" + self.server.token}
+
     def _pair_usb(self):
         """Arm the reverse mapping, then open the app on the phone connected.
 
@@ -911,18 +972,19 @@ class Handler(BaseHTTPRequestHandler):
                                         "phone?"}, HTTPStatus.BAD_GATEWAY)
         return self._json({"paired": opened})
 
-    def _deep_link(self):
-        base = "http://" + lan_ip() + ":" + str(self.server.server_address[1])
+    def _deep_link(self, host=None):
+        base = ("http://" + (host or lan_ip()) + ":" +
+                str(self.server.server_address[1]))
         return ("filebridge://c?u=" + urllib.parse.quote(base, safe="") +
                 "&t=" + self.server.token)
 
-    def _qr_png(self):
+    def _qr_png(self, host=None):
         """QR of the deep link, rendered by macOS CoreImage via JXA."""
         out = "/tmp/filebridge_qr.png"
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "qrgen.js")
         try:
             subprocess.run(["osascript", "-l", "JavaScript", script,
-                            self._deep_link(), out, "760"],
+                            self._deep_link(host), out, "760"],
                            capture_output=True, timeout=25, check=True)
             with open(out, "rb") as handle:
                 blob = handle.read()
@@ -1078,6 +1140,7 @@ button:disabled{opacity:.45;cursor:default}
     <div class="link" id="usbstate">-</div>
     <div class="actions">
       <button class="primary" id="usbpair">Pair over cable</button>
+      <button id="usbqr" style="display:none">Show cable QR</button>
     </div>
     <div class="hint" id="usbhint"></div>
   </div>
@@ -1090,7 +1153,8 @@ button:disabled{opacity:.45;cursor:default}
 <script>
 const $ = id => document.getElementById(id);
 let link = "__LINK__";
-let sharing = true, client = "", shownQr = false, dead = false, usb = null;
+let sharing = true, client = "", shownQr = false, dead = false, usb = null,
+    tether = null, wantCableQr = false;
 
 function el(tag, cls, text){
   const n = document.createElement(tag);
@@ -1106,10 +1170,21 @@ function renderUsb(){
   const ready = (usb.devices || []).length > 0;
   const unauth = (usb.waiting || []).some(w => w[1] === "unauthorized");
   const live = client === "usb";
+  const tethered = !!(tether && tether.on);
+  $("usbqr").style.display = tethered && !live ? "" : "none";
   let state, hint, offer = ready;
-  if(!usb.adb){
+  if(tethered && !ready){
+    // USB tethering needs nothing from Developer options, which is the whole
+    // reason it is offered: MagicOS would not publish an adb interface at all.
+    // No adb means no deep link to fire, so pairing is a scan.
+    state = tether.link;
+    hint = "Tethered over the cable. Scan the cable QR on the phone - a VPN " +
+           "can still break this one, unlike adb.";
+    offer = false;
+  }else if(!usb.adb){
     state = "No adb on this Mac";
-    hint = "The cable needs Android platform-tools. Wifi is unaffected.";
+    hint = "The cable needs Android platform-tools, or turn on USB tethering " +
+           "on the phone instead. Wifi is unaffected.";
     offer = false;
   }else if(live){
     state = usb.link;
@@ -1120,12 +1195,14 @@ function renderUsb(){
     offer = true;
   }else if(!ready){
     state = "No phone on the cable";
-    hint = "Plug it in, then turn on USB debugging in Developer options.";
+    hint = "Plug it in, then turn on USB debugging in Developer options - or " +
+           "USB tethering, which needs none of them.";
   }else{
     state = usb.link;
     hint = "Opens the app on the phone already connected - no QR, no typing.";
   }
-  $("usbdot").classList.toggle("on", live || (usb.armed || []).length > 0);
+  $("usbdot").classList.toggle("on",
+    live || (usb.armed || []).length > 0 || tethered);
   $("usbstate").textContent = state;
   $("usbhint").textContent = hint;
   $("usbpair").style.display = offer ? "" : "none";
@@ -1177,10 +1254,11 @@ function render(){
     shownQr = true;
     const img = el("img");
     img.id = "qr"; img.alt = "QR code to connect";
-    img.src = "/qr.png?" + Date.now();
+    img.src = "/qr.png?" + (wantCableQr ? "tether=1&" : "") + Date.now();
     const wrap = el("div", "qrwrap"); wrap.appendChild(img);
     card.replaceChildren(
-      el("div", "qrtitle", "Scan with the File Bridge app"),
+      el("div", "qrtitle", wantCableQr ? "Scan to connect over the cable"
+                                       : "Scan with the File Bridge app"),
       wrap,
       el("div", "hint", "This code disappears once your phone connects.")
     );
@@ -1194,6 +1272,7 @@ async function poll(){
     if(s.error) return;
     if(dead){ dead = false; shownQr = false; }   // server is back
     link = s.link; sharing = s.sharing; client = s.client || ""; usb = s.usb || null;
+    tether = s.tether || null;
     $("toCount").textContent = s.to_phone + (s.to_phone === 1 ? " file" : " files");
     $("fromCount").textContent = s.from_phone + (s.from_phone === 1 ? " file" : " files");
     render();
@@ -1210,6 +1289,12 @@ $("copy").onclick = async () => {
   await navigator.clipboard.writeText(link);
   $("copy").textContent = "Copied";
   setTimeout(() => $("copy").textContent = "Copy link", 1400);
+};
+$("usbqr").onclick = () => {
+  wantCableQr = !wantCableQr;
+  $("usbqr").textContent = wantCableQr ? "Show wifi QR" : "Show cable QR";
+  shownQr = false;
+  render();
 };
 $("usbpair").onclick = async () => {
   const b = $("usbpair");

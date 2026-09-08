@@ -22,10 +22,13 @@ because it has done its job.
   (there is a **Move to Phone** too, when you do not want a second copy).
 - **Phone → Mac.** Pick files in the app, they land in `~/FileBridge/from-phone`.
 - **Connect by QR.** Scan in-app, or with the phone's camera (deep link).
-- **Or over the cable.** With USB debugging on, press **Pair over cable** in the
-  panel: `adb reverse` carries the phone's own loopback to the Mac, and the app
-  opens already connected — no QR, no typing, no wifi. Not faster than a good
-  5 GHz link, but nothing can route it wrong and no radio can sleep on it.
+- **Or over the cable**, two ways. With **USB debugging** on, press *Pair over
+  cable* in the panel: `adb reverse` carries the phone's own loopback to the
+  Mac and the app opens already connected — no QR, no typing, and because
+  loopback cannot be routed, no VPN can break it. Failing that, turn on **USB
+  tethering**, which needs nothing from Developer options; the panel spots the
+  `192.168.42.x` link and offers a QR for it. Neither is faster than a good
+  5 GHz link — wired is for not depending on the network.
 - **Resumable downloads.** Range requests, so a dropped wifi link continues
   instead of restarting a 900 MB file.
 - **Remembers what you took**, per file, so a long list stays navigable.
@@ -37,7 +40,7 @@ because it has done its job.
 |---|---|
 | Mac | macOS 11+, Python 3.9+ (the system one is fine). `ffprobe` optional, for durations |
 | Phone | Android 7.0+ (API 24) |
-| Both | The same wifi network — **or** a USB cable, USB debugging on the phone, and `adb` on the Mac |
+| Both | The same wifi network — **or** a USB cable, with either USB debugging + `adb` on the Mac, or just USB tethering on the phone |
 
 Nothing to `pip install`. The server is standard library only.
 
@@ -132,9 +135,11 @@ Worth understanding before you use it on a network you do not control.
   arrives from `127.0.0.1`, so the wired listener is a *separate* socket that is
   never treated as local — it answers `403` to every route above. Getting this
   wrong would hand the phone the panel, and the panel prints the key.
-- **USB debugging is a real permission.** Pairing over the cable needs it on,
-  and it lets any authorised computer do far more than move files. Turn it off
-  when you are done if you do not otherwise use it.
+- **USB debugging is a real permission.** The adb cable path needs it on, and it
+  lets any authorised computer do far more than move files. Turn it off when you
+  are done if you do not otherwise use it. USB tethering needs no such grant,
+  but it is plain IP — a VPN on the phone can swallow it exactly as it swallows
+  wifi, which loopback cannot be.
 - **Path containment.** Served paths are confined to the shared folder. `..` is
   rejected; symlinks you place inside it *are* followed, deliberately, so you
   can link a media folder in.
@@ -174,6 +179,10 @@ The wired listener comes up alongside it on `127.0.0.1:8002` and can be driven
 with `curl` without any phone attached — it should answer `403` to `/connect`
 and `200` to `/api/list?t=devkey`. `--no-wired` skips it, and never starts adb.
 
+Tethering detection can be exercised without a phone by pointing `TETHER_NET`
+at a subnet the Mac is already on; the recipe is at the end of
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 **Three independent versions** — server, Mac app, Android app — because they
 talk over a stable HTTP API and rarely need to move together. Bump only what
 changed, and always bump Android's `versionCode` or the APK will not install
@@ -189,8 +198,13 @@ is measured from what is only believed to work, and lists this machine's quirks
 - **Same network required**, unless you use the cable. No relay, no internet
   fallback either way.
 - **The cable is not a speed upgrade.** On the hardware here it negotiates USB
-  2.0 High Speed (480 Mbit/s) against wifi already running at 600 Mbit/s. It is
-  for reliability — no VPN in the way, no radio to sleep — not throughput.
+  2.0 High Speed (480 Mbit/s) against wifi already running at 600 Mbit/s — and
+  wifi moved a real 6.3 MB file at 17.34 MB/s. Wired is for reliability, not
+  throughput.
+- **Some phones will not expose adb over USB at all.** The Honor tested here
+  publishes MTP and a HiSuite CD-ROM and no adb interface, whatever Developer
+  options says — hence the tethering fallback. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how to read the descriptors.
 - **The APK is debug-signed.** It installs and upgrades fine, but Play Store
   distribution would need a release keystore.
 - **No Dock tile of its own.** The Mac app is a launcher that exits, so the

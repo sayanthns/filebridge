@@ -448,10 +448,17 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    /** Is `b` the cable? Over `adb reverse` the Mac is reached on our own
-     *  loopback, so the transport is visible in the host and nowhere else. */
+    /** Is `b` the cable? Two shapes, because there are two wired paths.
+     *
+     *  Over `adb reverse` the Mac is reached on our own loopback. Over USB
+     *  tethering it is reached on 192.168.42.x, the fixed subnet Android's
+     *  tethering always builds. Both have to count, or the tethered link would
+     *  land in the wifi slot and overwrite the real one — which is exactly the
+     *  bug the two slots exist to prevent.
+     */
     private fun isCable(b: String) =
-        b.contains("://127.0.0.1") || b.contains("://localhost")
+        b.contains("://127.0.0.1") || b.contains("://localhost") ||
+        b.contains("://192.168.42.")
 
     /** Save the link twice: once as the live one, once in its transport's slot.
      *
@@ -623,8 +630,9 @@ class MainActivity : AppCompatActivity() {
                                 // here and naming them would send the user off
                                 // to debug the wrong thing.
                                 "The cable is not carrying anything. Plug the " +
-                                "phone into the Mac, then press \"Pair over " +
-                                "cable\" in the File Bridge panel."
+                                "phone into the Mac, then either press \"Pair " +
+                                "over cable\" in the File Bridge panel, or turn " +
+                                "USB tethering back on."
                             else if (vpnActive())
                                 "Could not reach the Mac. A VPN is on, and it sends " +
                                 "even local addresses through the tunnel. Turn on " +

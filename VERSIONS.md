@@ -5,9 +5,9 @@ do not have to move together — only bump what you actually changed.
 
 | Piece | Version | Where |
 |---|---|---|
-| Server | **1.13.0** | `filebridge.py` → `APP_VERSION` |
-| Mac app | **1.13.0** | `FileBridge.app` → `CFBundleShortVersionString` |
-| Android app | **1.12.0** (code 15) | `android/app/build.gradle` → `versionName` / `versionCode` |
+| Server | **1.14.0** | `filebridge.py` → `APP_VERSION` |
+| Mac app | **1.14.0** | `FileBridge.app` → `CFBundleShortVersionString` |
+| Android app | **1.13.0** (code 16) | `android/app/build.gradle` → `versionName` / `versionCode` |
 
 Android needs both: `versionName` is what you read, `versionCode` is what the
 installer compares. **A build with an unchanged `versionCode` will not install
@@ -16,6 +16,32 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Server
+
+### 1.14.0
+- **USB tethering as a second wired path**, because the first one did not
+  survive contact with the phone. MagicOS never published an adb interface: with
+  USB debugging on, "Transfer files" selected and the cable replugged, the Honor
+  offered only `MTP` (255/255/0) and a mass-storage CD-ROM (8/6/80, a "Linux
+  File-CD Gadget" holding Honor's HiSuite installer). adb's interface is
+  255/66/1 and `idProduct` never changed across the replug, so the USB function
+  set was never rebuilt. `adb devices` stayed empty for twelve minutes of
+  polling. Tethering needs nothing from Developer options at all.
+- `tether_ip()` recognises **192.168.42.x**, the fixed subnet Android's USB
+  tethering always builds (phone at `.129`). That is a documented constant, so
+  matching on it is honest; matching on interface names is not, because they
+  differ per Mac. `interface_ips()` reads `ifconfig` rather than reaching for
+  ctypes, since this file is stdlib-only on purpose.
+- **The QR can encode the tethered address**: `/qr.png?tether=1`. Needed because
+  the adb path pairs by firing a deep link at the phone, and with no adb there
+  is nothing to fire it with — so tethered pairing is a scan again. With no
+  tether up, `?tether=1` falls back to the wifi address rather than emitting a
+  broken link.
+- **It is the weaker of the two wired paths and the panel says so.** Tethering
+  is plain IP, so a full-tunnel VPN on the phone can still swallow it, exactly
+  as it swallows wifi. `adb reverse` is loopback and cannot be routed at all.
+  Prefer the cable-with-adb when the phone will allow it.
+- `/api/status` gains a `tether` block. It costs one `ifconfig` per poll, which
+  is why it is a small block and not a rescan of anything else.
 
 ### 1.13.0
 - **A wired transport, over the USB cable.** The phone dials its own
@@ -133,6 +159,10 @@ over the previous one**, so bump it on every APK you hand to the phone.
 
 ## Mac app
 
+### 1.14.0
+- Ships server 1.14.0, so the Cable card also covers USB tethering and can show
+  a QR for it.
+
 ### 1.13.0
 - Ships server 1.13.0, so the panel gains the Cable card and "Pair over cable".
   Nothing in the launcher changed: the server binds the wired port and keeps the
@@ -180,6 +210,15 @@ over the previous one**, so bump it on every APK you hand to the phone.
 ---
 
 ## Android app
+
+### 1.13.0 (versionCode 16)
+- **`isCable()` counts a tethered address too.** It matched only loopback, so a
+  `192.168.42.x` link would have been filed in the wifi slot and overwritten the
+  real one — the exact bug the two slots were added to prevent. Both wired
+  shapes now classify as the cable, so the fallback still has somewhere to fall
+  back to.
+- The cable error offers tethering as well as the panel's Pair button, since
+  either can be the thing that is off.
 
 ### 1.12.0 (versionCode 15)
 - **One saved link per transport, and a fallback between them.** Pairing over

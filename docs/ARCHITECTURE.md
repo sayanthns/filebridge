@@ -13,18 +13,26 @@ worth reading first — each one cost real debugging time.
 | `tools/qrgen.js` | JXA | QR PNG via macOS CoreImage — no dependency to install |
 | `android/` | Kotlin | Native phone app: browse, download, upload, scan |
 
+`filebridge.py` also shells out to `adb` — found by path, since it is not on
+`PATH` on a normal Mac even with the SDK installed.
+
 ## Two transports
 
 The same API, reached two ways. Nothing above the socket knows which.
 
-| | Wifi | Cable |
-|---|---|---|
-| Listener | `0.0.0.0:8001` | `127.0.0.1:8002`, flagged `wired` |
-| Phone dials | `http://<lan-ip>:8001` | `http://127.0.0.1:8001` on the phone |
-| Carried by | the network | `adb reverse tcp:8001 tcp:8002` |
-| Needs | same wifi | USB debugging + one "Allow" tap |
-| A VPN can break it | **yes** | no — nothing is routed |
-| Radio can sleep | yes | no |
+| | Wifi | Cable, via adb | Cable, via tethering |
+|---|---|---|---|
+| Listener | `0.0.0.0:8001` | `127.0.0.1:8002`, flagged `wired` | `0.0.0.0:8001` |
+| Phone dials | `http://<lan-ip>:8001` | `http://127.0.0.1:8001` on the phone | `http://192.168.42.x:8001` |
+| Carried by | the network | `adb reverse tcp:8001 tcp:8002` | an RNDIS/NCM link on the cable |
+| Needs | same wifi | USB debugging + one "Allow" tap | **nothing** in Developer options |
+| Pairs by | QR | deep link fired over adb | QR (`/qr.png?tether=1`) |
+| A VPN can break it | **yes** | no — nothing is routed | **yes** — it is plain IP |
+| Radio can sleep | yes | no | no |
+
+Prefer adb when the phone allows it: loopback cannot be routed, so it is the
+only one of the three a VPN cannot touch. Tethering exists because a phone may
+simply refuse to publish an adb interface — see the dead ends.
 
 ```
 Mac                                                        Phone
@@ -39,6 +47,12 @@ was an 802.11ax 80 MHz link at −55 dBm with a 600 Mbit/s transmit rate. Wired
 buys independence from the network, not throughput — and the two worst bugs in
 this project's history were both network-layer (a VPN eating `192.168.x.x`, and
 the radio sleeping with the screen).
+
+Tethering needs no second listener: `192.168.42.x` is a real address on a real
+interface, so the existing `0.0.0.0` socket already answers there and the phone
+is correctly treated as a phone. Only the *advertised* address had to change,
+which is what `tether_ip()` and `/qr.png?tether=1` are for — `lan_ip()` asks the
+routing table for one address and would keep printing the wifi one.
 
 **Two listeners, not one, and that is the security model.** `adb reverse`
 delivers the phone's requests from `127.0.0.1`, so an address check cannot tell
@@ -184,6 +198,23 @@ explicit action plus a scheduled sweep.
 another user's process must read cannot be `0700`. Relevant if you add an
 X-Accel-style path later.
 
+**Assuming "USB debugging is on" means adb can see the phone.** On the Honor
+this was built against, MagicOS never added the adb function to the USB
+composition. With the toggle on, "Transfer files" selected and the cable
+replugged, `ioreg` showed only:
+
+```
+MTP@0           255/255/0   vendor MTP
+Mass Storage@1  8/6/80      "Linux File-CD Gadget" — HiSuite's autorun disc
+```
+
+adb's interface is class 255 / subclass 66 / protocol 1, and `idProduct` was
+identical before and after the replug — so the function set was never rebuilt,
+and no amount of `adb kill-server` / `adb usb` / `adb reconnect` helps. Read the
+interface descriptors before debugging the host: an absent interface and a
+refused authorisation look the same from `adb devices` (both print nothing
+useful) but have nothing in common. `unauthorized` means the interface is there.
+
 **An address check for "is this the Mac?", once a cable existed.** `_local()`
 compared `client_address[0]` against `127.0.0.1`. That is correct with one
 listener and catastrophic with two: `adb reverse` hands the phone's requests to
@@ -253,7 +284,19 @@ curl -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8002/api/list?t=$KEY"   
 
 # and the wifi socket still trusts loopback
 curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/connect             # 200
+
+# --- tethering. To exercise the detection without a phone, point TETHER_NET at
+# --- a subnet this Mac is already on; the code path is otherwise identical.
+sed 's|^TETHER_NET = "192.168.42."|TETHER_NET = "10.0.0."|' filebridge.py > /tmp/sim.py
+cp -R tools /tmp/tools          # _qr_png resolves tools/ next to the script
+python3 /tmp/sim.py ~/FileBridge --port 8881 --token devkey &
+curl -s http://127.0.0.1:8881/api/status | python3 -m json.tool | grep -A3 tether
+curl -so /tmp/q.png "http://127.0.0.1:8881/qr.png?tether=1"
+osascript -l JavaScript /tmp/tools/qrread.js /tmp/q.png    # must be the tether address
 ```
+
+Decode every QR you generate — that is the only way to know it scans, and the
+`?tether=1` path has its own `_deep_link(host)` argument to get wrong.
 
 To prove the guard is load-bearing rather than vacuous, delete these two lines
 from `_local()` and re-run the block above — the panel, the key and `/api/quit`

@@ -10,9 +10,9 @@ Last updated: 2026-09-08.
 
 | Piece | Version | State |
 |---|---|---|
-| Server (`filebridge.py`) | 1.13.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener |
-| Mac app | 1.13.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
-| Android app | 1.12.0 (code 15) | Working over wifi, both directions, screen off. Cable side compile-verified only |
+| Server (`filebridge.py`) | 1.14.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
+| Mac app | 1.14.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
 the other:
@@ -33,6 +33,38 @@ Both landed and a large file now completes on the phone with the screen off.
 The shape of a healthy transfer in `~/.filebridge/gui.log` is several `TRANSFER`
 lines for one file, the later ones carrying `range=bytes=N-`, ending in
 `complete`. A single `range=none` line with no follow-up is the old failure.
+
+**The phone will not give us adb, and that is the headline.** Read this before
+you spend a session on it. On the Honor here, MagicOS never adds the adb
+function to the USB composition. With USB debugging on in Developer options,
+"Transfer files" selected, and the cable replugged, `ioreg` shows exactly two
+interfaces:
+
+```
+MTP@0           255/255/0   vendor MTP
+Mass Storage@1  8/6/80      "Linux File-CD Gadget" — HiSuite's autorun CD-ROM
+```
+
+adb's interface is **255/66/1**. It is not there, and `idProduct` (4221) was
+identical before and after the replug, so the function set was never rebuilt.
+`adb devices` stayed empty across a twelve-minute poll, and
+`adb kill-server` / `adb usb` / `adb reconnect` change nothing — there is no
+interface for them to talk to. **Check the descriptors first.** An absent
+interface and a refused authorisation both look like "no devices" from
+`adb devices` but have nothing in common; `unauthorized` means the interface
+exists and only the Allow tap is missing.
+
+Untried on-device leads, in likelihood order: the toggle silently reverting on
+replug, an HDB / "allow HiSuite to use HDB" gate, and an HONOR ID sign-in
+precondition that is widely reported on global MagicOS.
+
+**So there are two wired paths, and tethering is the one that needs no
+permission.** `tether_ip()` recognises `192.168.42.x`, the fixed subnet Android
+USB tethering always builds, and `/qr.png?tether=1` encodes it — necessary
+because adb pairing works by *firing* a deep link at the phone, and with no adb
+there is nothing to fire it with. Tethering is plain IP, so unlike
+`adb reverse` a full-tunnel VPN can still swallow it. The panel says so rather
+than pretending the two are equivalent.
 
 **The cable works, but has never met a phone.** 1.13.0 adds a second listener
 bound to `127.0.0.1:8002` and flagged `wired`; `adb reverse tcp:8001 tcp:8002`
@@ -134,8 +166,14 @@ path.
   folder
 
 **Not verified — treat as unknown:**
+- **USB tethering itself.** Detection, the `tether` block, the tethered QR and
+  its decode were all exercised — but by pointing `TETHER_NET` at a subnet this
+  Mac was already on, because turning tethering on is a phone-side action that
+  has not happened yet. Whether macOS brings up an interface for this Honor at
+  all (it has no native RNDIS; CDC-NCM it does support) is **unknown**, and so
+  is whether the phone's route table lets an app reach a tethered host
 - **`adb reverse` and `adb shell am start` against a real device.** The two
-  calls the cable rests on. USB debugging is off on the phone here, so
+  calls the adb path rests on. USB debugging is off on the phone here, so
   `adb devices` is empty and the whole adb half is reasoned from the code plus
   the fact that `adb reverse` with no device fails in 13 ms rather than hanging.
   The command strings are right — the device-side shell quoting was checked by
@@ -155,15 +193,25 @@ path.
   the string is compiled into the APK, but neither the Settings row nor the
   reworded connect error has been seen on a screen with a VPN up.
 - **Any second machine.** Only ever run on one Mac, one phone, one network.
+- **Whether the cable is worth it at all.** The one hard number we have argues
+  no: the phone pulled a 6.3 MB APK over wifi at **17.34 MB/s**, and the cable
+  negotiates USB 2.0 High Speed with adb port-forwarding overhead on top. The
+  case for wired is VPN immunity and no radio sleep, not speed — and only the
+  adb path actually delivers the VPN immunity.
 
 ## Open items
 
-1. **Turn on USB debugging and run the cable once.** Everything else about it
-   is measured; this is the one gap, and it is a toggle plus a tap. Developer
-   options → USB debugging, then "Allow" when the Mac's key prompt appears, then
-   "Pair over cable" in the panel. Expect the app to open already connected and
-   the panel to show `usb`. `adb reverse --list` should print
-   `tcp:8001 tcp:8002`.
+1. **Get one of the two wired paths onto real hardware.** Everything else about
+   both is measured; this is the only gap left.
+   - *Tethering* is the cheaper try, because it needs nothing from Developer
+     options: Settings → Mobile network → Tethering → USB tethering. Then
+     `ifconfig` should show a new interface with a `192.168.42.x` address, the
+     panel's Cable card should light up on its own, and "Show cable QR" gives
+     the phone a link to scan. If no interface appears, macOS has no driver for
+     this phone's tethering mode and that path is dead here.
+   - *adb* is the better transport if MagicOS can be talked into it — see the
+     descriptor evidence above for what to check. Then "Pair over cable" in the
+     panel, and `adb reverse --list` should print `tcp:8001 tcp:8002`.
 2. **Uploads cannot resume.** The server has one multipart `POST /api/upload`
    with no offset, so an interrupted send starts over. An endpoint taking a byte
    offset and appending to a temp file would close the last asymmetry between the
@@ -203,6 +251,7 @@ These cost hours. They are properties of the environment, not the code.
 | Gradle | Not on `PATH`. `scripts/build-android.sh` finds a cached distribution under `~/.gradle/wrapper/dists`. **It must be a 8.x one** — a cached 9.7.1 appeared and newest-wins picked it, and AGP 8.2.1 dies on Gradle 9 with *Could not isolate value … BuildFlowService$Parameters* (it wants `org/gradle/api/internal/HasConvention`, removed in 9). The script now asks for 8.2.1 by name |
 | JDK | `JAVA_HOME=/opt/homebrew/opt/openjdk@17` — AGP 8.2.1 needs 17, not 21 |
 | `screencapture` | Needs Screen Recording permission; unavailable, so UI could not be visually checked. Headless Chrome was used for the panel screenshots |
+| Honor MTN-NX1 | Enumerates as `HONOR MTN-NX1`, serial `ANMV6R5A30006550`, `idVendor` 13211 / `idProduct` 4221, **USB 2.0 High Speed** (`Device Speed = 2`). Presents a mass-storage CD-ROM (HiSuite autorun) and refuses to publish an adb interface — see above |
 | `apksigner` | Needs `JAVA_HOME=/opt/homebrew/opt/openjdk@17` in the environment or it reports *Unable to locate a Java Runtime*. `build-android.sh` sets it; a bare shell does not |
 | QR generation | macOS CoreImage via JXA (`tools/qrgen.js`). No pip install. `tools/qrread.js` decodes, and every generated QR should be decoded to confirm it scans |
 
