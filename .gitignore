@@ -22,3 +22,5 @@ __pycache__/
 key
 state.json
 *.log
+.agentsync/
+graphify-out/

@@ -1,0 +1,19 @@
+# agentsync vendor defaults (delete lines you want graphed)
+.agentsync/
+graphify-out/
+**/graphify-out/
+*.min.js
+*.min.css
+*.min.mjs
+*.bundle.js
+*.map
+**/vendor/
+**/vendored/
+**/third_party/
+**/pdfjs/
+**/node_modules/
+**/dist/
+**/build/
+**/.venv/
+**/venv/
+**/__pycache__/
