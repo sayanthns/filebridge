@@ -4,14 +4,14 @@ For whoever picks this up next. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md
 alongside this — it holds the HTTP API and the dead ends. This file is state and
 honesty: what works, what is merely *believed* to work, and what is left.
 
-Last updated: 2026-09-08.
+Last updated: 2026-11-17.
 
 ## Where things stand
 
 | Piece | Version | State |
 |---|---|---|
 | Server (`filebridge.py`) | 1.19.0 | Working. Browse, download (Range + ETag), upload, pause/resume, wired listener, tethering |
-| Mac app | 1.19.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added |
+| Mac app | 1.19.0 | Working. Installed at `~/Applications/FileBridge.app`, Dock shortcut added. **Must be ad-hoc signed on macOS 27** — `build-mac-app.sh` does it now (3fe4866); see the 2026-11-17 note below |
 | Android app | 1.13.0 (code 16) | Working over wifi, both directions, screen off. Installed and confirmed by use. Cable side compile-verified only |
 
 **Large downloads to the phone (the long-running bug).** Two causes, one after
@@ -253,10 +253,16 @@ path.
   The command strings are right — the device-side shell quoting was checked by
   round-tripping a token containing a `'` through `sh -c` — but nothing has
   spoken to a phone
-- **Why `adb shell am start` refused.** Still unknown, but no longer
-  unrecorded: server 1.17.0 logs `rc=` and `am`'s own words to `gui.log`
-  (with the key redacted), so the next attempt will say. Look for a line
-  starting `AM start:`
+- **Why `adb shell am start` refused.** *What* is now known, *why* is not.
+  `gui.log` has 25+ `AM start:` lines, all `rc=1`: `Activity not started,
+  unable to resolve Intent { act=VIEW dat=filebridge://c/... }`. So the phone
+  had no activity matching the `filebridge` scheme. The manifest in the repo
+  declares it (`<data android:scheme="filebridge" />`, VIEW + BROWSABLE +
+  DEFAULT), so the likeliest cause is that the APK **installed on the phone
+  predates that filter** (or is not installed). Unchecked — it needs adb to see
+  the phone: `adb shell pm list packages | grep filebridge` and
+  `adb shell dumpsys package com.enfono.filebridge | grep -i versionCode`,
+  compare against 16
 - **The transport fallback on the phone** (`url_wifi` / `url_usb`).
   Compile-verified, and the new strings are confirmed inside the APK, but no
   cable has been unplugged mid-session to watch it swap
@@ -332,6 +338,7 @@ These cost hours. They are properties of the environment, not the code.
 
 | Thing | Reality |
 |---|---|
+| macOS 27 + unsigned app | **The server died ~0.4 s after every launch** and the panel read "File Bridge has quit" though nobody quit. No traceback, no `/api/quit` in `gui.log`. Cause, from `log show` on `loginwindow`: Background Task Management cannot build an identifier for an unsigned bundle (`failed to construct identifier`, `askBTM: Error -98`), so when the launcher exits macOS *schedules termination of the app's subordinate processes* — the server. `setsid` does not escape it, and a launchd job (`launchctl bootstrap`) was reaped too. Fix: `codesign --force --deep -s -` on the bundle; no certificate needed. A hand-built or copied app needs it again. Diagnose with `/usr/bin/log show --last 5m --predicate 'eventMessage CONTAINS[c] "filebridge"'` (not bare `log` — zsh shadows it) and look for `-98` |
 | `swiftc` | Broken: *redefinition of module 'SwiftBridging'* from a bad CommandLineTools module map. No native Swift UI possible here |
 | Tkinter | Only Apple's system **Tk 8.5.9**, which draws blank windows on modern macOS. Widgets build, nothing renders |
 | `~/Documents` | TCC-protected. A Finder-launched app reading code there gets `Operation not permitted`. Terminal *does* have access, which hides the bug |
