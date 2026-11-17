@@ -47,4 +47,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
+
+# Ad-hoc sign. Unsigned, macOS 27's Background Task Management cannot build an
+# identifier for the bundle and answers -98 when the launcher exits; loginwindow
+# then terminates every process the app started - the server, ~0.4s after each
+# launch ("File Bridge has quit" with nobody having quit it). Not for
+# distribution, just enough for BTM to recognise the app. Needs no certificate.
+codesign --force --deep -s - "$APP"
 echo "built $APP (version $VERSION)"
